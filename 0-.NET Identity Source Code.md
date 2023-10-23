@@ -67,6 +67,25 @@ public static class AuthenticationCoreServiceCollectionExtensions
    }
 }
 //---------------------------------------------------------------Ʌ
+
+//-----------------------------------------------------V
+public static class AuthenticationHttpContextExtensions
+{
+   public static Task<AuthenticateResult> AuthenticateAsync(this HttpContext context) => context.AuthenticateAsync(scheme: null);
+   public static Task<AuthenticateResult> AuthenticateAsync(this HttpContext context, string? scheme) => GetAuthenticationService(context).AuthenticateAsync(context, scheme);
+   
+   public static Task SignInAsync(this HttpContext context, string? scheme, ClaimsPrincipal principal) => context.SignInAsync(scheme, principal, properties: null);
+   public static Task SignInAsync(this HttpContext context, ClaimsPrincipal principal) => context.SignInAsync(scheme: null, principal: principal, properties: null);
+   public static Task SignInAsync(this HttpContext context, ClaimsPrincipal principal, AuthenticationProperties? properties) => context.SignInAsync(scheme: null, principal: principal, properties: properties);
+   public static Task SignInAsync(this HttpContext context, string? scheme, ClaimsPrincipal principal, AuthenticationProperties? properties) => GetAuthenticationService(context).SignInAsync(context, scheme, principal, properties);
+   // ... SignOutAsync, ChallengeAsync, ForbidAsync
+   
+   public static Task<string?> GetTokenAsync(this HttpContext context, string tokenName) => GetAuthenticationService(context).GetTokenAsync(context, tokenName);
+
+   private static IAuthenticationService GetAuthenticationService(HttpContext context) =>
+      context.RequestServices.GetService<IAuthenticationService>() ?? throw new InvalidOperationException("...");
+}
+//-----------------------------------------------------Ʌ
 ```
 
 **Authorization**
@@ -1057,6 +1076,13 @@ public interface IAuthenticationHandler
    Task ForbidAsync(AuthenticationProperties? properties);
 }
 //-------------------------------------<<
+
+//------------------------------------------->>
+public interface IAuthenticationRequestHandler : IAuthenticationHandler
+{
+   Task<bool> HandleRequestAsync();
+}
+//-------------------------------------------<<
 
 //-------------------------------V
 public class AuthenticationScheme
