@@ -1,7 +1,7 @@
 1-Introduction to .NET Identity
 ==============================
 
-A custom middleware approach:
+## Custom Middleware Approach
 
 ```C#
 //------------------V
@@ -9,8 +9,6 @@ public class Startup
 {
     public void ConfigureServices(IServiceCollection services)
     {
-        services.AddRazorPages();
-        services.AddControllersWithViews();
     }
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
@@ -126,4 +124,104 @@ public class RoleMemberships
     }
 }
 //--------------------------Ʌ
+```
+
+## Build-in Middleware Approach
+
+```C#
+//------------------V
+public class Startup
+{
+
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddAuthentication(opts =>   // opts is AuthenticationOptions
+        {
+            opts.AddScheme<AuthHandler>("qsv", "QueryStringValue");   // <--------------------
+            opts.DefaultScheme = "qsv";   // <--------------------
+        });
+        services.AddAuthorization();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        //app.UseMiddleware<CustomAuthentication>();
+        app.UseAuthentication();
+
+        app.UseMiddleware<RoleMemberships>();
+
+        app.UseRouting();
+
+        app.UseMiddleware<ClaimsReporter>();
+
+        //app.UseMiddleware<CustomAuthorization>();
+        app.UseAuthorization();
+
+        app.UseEndpoints(endpoints => {
+            endpoints.MapGet("/", async context => {
+                await context.Response.WriteAsync("Hello World!");
+            });
+            endpoints.MapGet("/secret", SecretEndpoint.Endpoint).WithDisplayName("secret");
+
+            endpoints.Map("/signin", CustomSignInAndSignOut.SignIn);
+            endpoints.Map("/signout", CustomSignInAndSignOut.SignOut);
+        });
+    }
+}
+//------------------Ʌ
+
+//-------------------------V
+public class SecretEndpoint
+{
+    [Authorize(Roles = "Administrator")]
+    public static async Task Endpoint(HttpContext context)
+    {
+        await context.Response.WriteAsync("This is the secret message");
+    }
+}
+//-------------------------Ʌ
+
+//----------------------V
+public class AuthHandler : IAuthenticationHandler
+{
+    private HttpContext context;
+    private AuthenticationScheme scheme;
+
+    public Task InitializeAsync(AuthenticationScheme authScheme, HttpContext httpContext)
+    {
+        context = httpContext;
+        scheme = authScheme;
+        return Task.CompletedTask;
+    }
+
+    public Task<AuthenticateResult> AuthenticateAsync()
+    {
+        AuthenticateResult result;
+        string user = context.Request.Cookies["authUser"];
+        if (user != null)
+        {
+            Claim claim = new Claim(ClaimTypes.Name, user);
+            ClaimsIdentity ident = new ClaimsIdentity(scheme.Name);
+            ident.AddClaim(claim);
+            result = AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(ident), scheme.Name));
+        }
+        else
+        {
+            result = AuthenticateResult.NoResult();
+        }
+        return Task.FromResult(result);
+    }
+
+    public Task ChallengeAsync(AuthenticationProperties properties)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return Task.CompletedTask;
+    }
+    public Task ForbidAsync(AuthenticationProperties properties)
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return Task.CompletedTask;
+    }
+}
+//----------------------Ʌ
 ```
