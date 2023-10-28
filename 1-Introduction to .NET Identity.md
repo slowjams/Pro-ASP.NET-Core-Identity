@@ -1,7 +1,7 @@
 1-Introduction to .NET Identity
 ==============================
 
-## Custom Middleware Approach
+## Custom Middleware Approach V1
 
 ```C#
 //------------------V
@@ -9,6 +9,7 @@ public class Startup
 {
     public void ConfigureServices(IServiceCollection services)
     {
+        // ...
     }
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
@@ -22,9 +23,6 @@ public class Startup
         app.UseMiddleware<CustomAuthorization>();
 
         app.UseEndpoints(endpoints => {
-            endpoints.MapGet("/", async context => {
-                await context.Response.WriteAsync("Hello World!");
-            });
             endpoints.MapGet("/secret", SecretEndpoint.Endpoint).WithDisplayName("secret");
         });
     }
@@ -124,6 +122,16 @@ public class RoleMemberships
     }
 }
 //--------------------------Ʌ
+
+//-------------------------V
+public class SecretEndpoint
+{
+    public static async Task Endpoint(HttpContext context)
+    {
+        await context.Response.WriteAsync("This is the secret message");
+    }
+}
+//-------------------------Ʌ
 ```
 
 ## Build-in Middleware Approach
@@ -212,14 +220,127 @@ public class AuthHandler : IAuthenticationHandler
         return Task.FromResult(result);
     }
 
-    public Task ChallengeAsync(AuthenticationProperties properties)
+    public Task ChallengeAsync(AuthenticationProperties properties)  // <----------------will be called by AuthorizationMiddleware when condition meet
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
         return Task.CompletedTask;
     }
-    public Task ForbidAsync(AuthenticationProperties properties)
+    public Task ForbidAsync(AuthenticationProperties properties)    // <----------------will be called by AuthorizationMiddleware when condition meet
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return Task.CompletedTask;
+    }
+}
+//----------------------Ʌ
+```
+
+=================================================================================================================================
+
+## V2
+
+```C#
+//------------------V
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddAuthentication(opts =>
+        {
+           opts.AddScheme<AuthHandler>("qsv", "QueryStringValue");
+           opts.DefaultScheme = "qsv";
+        });
+        // ...
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        //app.UseMiddleware<CustomAuthentication>();
+        app.UseAuthentication();
+
+        app.UseMiddleware<RoleMemberships>();
+
+        app.UseRouting();
+
+        //app.UseMiddleware<CustomAuthorization>();
+        app.UseAuthorization();
+
+        app.UseEndpoints(endpoints => {
+            //endpoints.Map("/signin", CustomSignInAndSignOut.SignIn);
+            //endpoints.Map("/signout", CustomSignInAndSignOut.SignOut);
+            endpoints.MapGet("/secret", SecretEndpoint.Endpoint).WithDisplayName("secret");
+            // ...
+        });
+    }
+}
+//------------------Ʌ
+
+//-------------------------V
+public class SecretEndpoint
+{
+    [Authorize(Roles = "Administrator")]
+    public static async Task Endpoint(HttpContext context)
+    {
+        await context.Response.WriteAsync("This is the secret message");
+    }
+}
+//-------------------------Ʌ
+```
+
+```C#
+//----------------------V
+public class AuthHandler : IAuthenticationSignInHandler
+{
+    private HttpContext context;
+    private AuthenticationScheme scheme;
+
+    public Task InitializeAsync(AuthenticationScheme authScheme, HttpContext httpContext)
+    {
+        context = httpContext;
+        scheme = authScheme;
+        return Task.CompletedTask;
+    }
+
+    public Task<AuthenticateResult> AuthenticateAsync()
+    {
+        AuthenticateResult result;
+        string user = context.Request.Cookies["authUser"];
+        if (user != null)
+        {
+            Claim claim = new Claim(ClaimTypes.Name, user);
+            ClaimsIdentity ident = new ClaimsIdentity(scheme.Name);
+            ident.AddClaim(claim);
+            result = AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(ident), scheme.Name));
+        }
+        else
+        {
+            result = AuthenticateResult.NoResult();
+        }
+        return Task.FromResult(result);
+    }
+
+    public Task SignInAsync(ClaimsPrincipal user, AuthenticationProperties properties)
+    {
+        context.Response.Cookies.Append("authUser", user.Identity.Name);
+        return Task.CompletedTask;
+    }
+
+    public Task SignOutAsync(AuthenticationProperties properties)
+    {
+        context.Response.Cookies.Delete("authUser");
+        return Task.CompletedTask;
+    }
+
+    public Task ChallengeAsync(AuthenticationProperties properties)
+    {
+        //context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.Redirect("/signin/401");
+        return Task.CompletedTask;
+    }
+
+    public Task ForbidAsync(AuthenticationProperties properties)
+    {
+        //context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        context.Response.Redirect("/signin/403");
         return Task.CompletedTask;
     }
 }
