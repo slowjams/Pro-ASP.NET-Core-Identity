@@ -1455,7 +1455,11 @@ public class AuthorizationMiddleware
          resource = context;
       }
  
+      // this is important, authorization process will actually invoke authentication process, the authentication process in the AuthenticationMiddleware only
+      // invoke authentication process for default auth scheme, but authorization process in AuthenticationMiddlwarfe will do authentication process for each
+      // auth scheme specified in e.g [Authorize(AuthenticationSchemes = "Foo, Bar")]
       var authorizeResult = await policyEvaluator.AuthorizeAsync(policy, authenticateResult!, context, resource);  // <----------------------b4
+      // look like we can check authenticateResult here and return 401, but the idea is authorize the request to see if it is 403 then see whether to return 401 or 403
       var authorizationMiddlewareResultHandler = context.RequestServices.GetRequiredService<IAuthorizationMiddlewareResultHandler>();
       
       await authorizationMiddlewareResultHandler.HandleAsync(_next, context, policy, authorizeResult); // <---------------------b5, call IAuthenticationHandler.ChallengeAsync()
@@ -2949,7 +2953,8 @@ public class ClaimsPrincipal : IPrincipal
       UserData = 2
    }
 
-   private readonly List<ClaimsIdentity> _identities = new List<ClaimsIdentity>();
+   private readonly List<ClaimsIdentity> _identities = new List<ClaimsIdentity>();  //<--------------------------
+
    private readonly byte[]? _userSerializationData;
  
    private static Func<IEnumerable<ClaimsIdentity>, ClaimsIdentity?> s_identitySelector = SelectPrimaryIdentity;

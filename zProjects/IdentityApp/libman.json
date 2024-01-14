@@ -9,6 +9,10 @@
     {
       "library": "qrcodejs@1.0.0",
       "destination": "wwwroot/lib/qrcode"
+    },
+    {
+      "library": "font-awesome@6.5.1",
+      "destination": "wwwroot/lib/font-awesome"
     }
   ]
 }

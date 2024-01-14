@@ -260,6 +260,10 @@ public class HomeController : Controller
     [Authorize(Roles = "Admin")]
     public IActionResult Index() => View();
 
+    // or use ',' to spilt
+    [Authorize(Roles = "User, Admin")]
+    public IActionResult Index() => View();
+
 }
 ```
 
@@ -273,6 +277,11 @@ public class HomeController : Controller
     [Authorize(Roles = "Admin")]
     [Authorize(AuthenticationSchemes = "Cookies")]
     [Authorize(AuthenticationSchemes = "Foo")]
+    public IActionResult Index() => View();
+
+    // or use ',' to spilt
+    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "Cookies, Foo")]
     public IActionResult Index() => View();
 
 }
@@ -391,11 +400,11 @@ This is needed to authorize anonymous users where there could be business cases 
 Also note that the source code is deign to generate "Challenge" rather than "Forbid" when both authentication and authorization fails, isn't that "Challenge" more appropriate?
 
 
-## Approach V3 - Custom authorization policies with IAuthorizationRequirementData
+## Approach V3 Todo- Custom authorization policies with IAuthorizationRequirementData
 
 ```C#
 
 ```
 
-## Approach V4 - Minimal API with Auth
+## Approach V4 Todo - Minimal API with Auth
 

@@ -54,7 +54,7 @@ public class SignInModel : PageModel
 ## Source Code
 
 ```C#
-//-----------------------------------------------------V
+//-----------------------------------------------------V Assembly Microsoft.Extensions.Identity.Core
 public static class IdentityServiceCollectionExtensions
 {
    public static IdentityBuilder AddIdentityCore<TUser>(this IServiceCollection services)
@@ -83,6 +83,154 @@ public static class IdentityServiceCollectionExtensions
  
         return new IdentityBuilder(typeof(TUser), services);  // <--------------------pass TUser to IdentityBuilder.UserType and TUser can be used in AddSignInManager
    }
+}
+//-----------------------------------------------------Ʌ
+
+ //----------------------------------------------------V Assembly Microsoft.AspNetCore.Identity
+public static class IdentityServiceCollectionExtensions
+{
+    public static IdentityBuilder AddIdentity<TUser, TRole>(this IServiceCollection services)
+        => services.AddIdentity<TUser, TRole>(setupAction: null!);
+
+    public static IdentityBuilder AddIdentity<TUser, TRole>(this IServiceCollection services, Action<IdentityOptions> setupAction)
+    {
+        // Services used by identity
+        services.AddAuthentication(options =>
+        {
+            options.DefaultAuthenticateScheme = IdentityConstants.ApplicationScheme;
+            options.DefaultChallengeScheme = IdentityConstants.ApplicationScheme;
+            options.DefaultSignInScheme = IdentityConstants.ExternalScheme;
+        })
+        .AddCookie(IdentityConstants.ApplicationScheme, o =>
+        {
+            o.LoginPath = new PathString("/Account/Login");
+            o.Events = new CookieAuthenticationEvents
+            {
+                OnValidatePrincipal = SecurityStampValidator.ValidatePrincipalAsync
+            };
+        })
+        .AddCookie(IdentityConstants.ExternalScheme, o =>
+        {
+            o.Cookie.Name = IdentityConstants.ExternalScheme;
+            o.ExpireTimeSpan = TimeSpan.FromMinutes(5);
+        })
+        .AddCookie(IdentityConstants.TwoFactorRememberMeScheme, o =>
+        {
+            o.Cookie.Name = IdentityConstants.TwoFactorRememberMeScheme;
+            o.Events = new CookieAuthenticationEvents
+            {
+                OnValidatePrincipal = SecurityStampValidator.ValidateAsync<ITwoFactorSecurityStampValidator>
+            };
+        })
+        .AddCookie(IdentityConstants.TwoFactorUserIdScheme, o =>
+        {
+            o.Cookie.Name = IdentityConstants.TwoFactorUserIdScheme;
+            o.Events = new CookieAuthenticationEvents
+            {
+                OnRedirectToReturnUrl = _ => Task.CompletedTask
+            };
+            o.ExpireTimeSpan = TimeSpan.FromMinutes(5);
+        });
+ 
+        // Hosting doesn't add IHttpContextAccessor by default
+        services.AddHttpContextAccessor();
+        // Identity services
+        services.TryAddScoped<IUserValidator<TUser>, UserValidator<TUser>>();
+        services.TryAddScoped<IPasswordValidator<TUser>, PasswordValidator<TUser>>();
+        services.TryAddScoped<IPasswordHasher<TUser>, PasswordHasher<TUser>>();
+        services.TryAddScoped<ILookupNormalizer, UpperInvariantLookupNormalizer>();
+        services.TryAddScoped<IRoleValidator<TRole>, RoleValidator<TRole>>();
+        // No interface for the error describer so we can add errors without rev'ing the interface
+        services.TryAddScoped<IdentityErrorDescriber>();
+        services.TryAddScoped<ISecurityStampValidator, SecurityStampValidator<TUser>>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<SecurityStampValidatorOptions>, PostConfigureSecurityStampValidatorOptions>());
+        services.TryAddScoped<ITwoFactorSecurityStampValidator, TwoFactorSecurityStampValidator<TUser>>();
+        services.TryAddScoped<IUserClaimsPrincipalFactory<TUser>, UserClaimsPrincipalFactory<TUser, TRole>>();
+        services.TryAddScoped<IUserConfirmation<TUser>, DefaultUserConfirmation<TUser>>();
+        services.TryAddScoped<UserManager<TUser>>();
+        services.TryAddScoped<SignInManager<TUser>>();
+        services.TryAddScoped<RoleManager<TRole>>();
+ 
+        if (setupAction != null)
+        {
+            services.Configure(setupAction);
+        }
+ 
+        return new IdentityBuilder(typeof(TUser), typeof(TRole), services);
+    }
+
+    public static IdentityBuilder AddIdentityApiEndpoints<TUser>(this IServiceCollection services)
+        => services.AddIdentityApiEndpoints<TUser>(_ => { });
+
+    public static IdentityBuilder AddIdentityApiEndpoints<TUser>(this IServiceCollection services, Action<IdentityOptions> configure)
+    {
+        services
+            .AddAuthentication(IdentityConstants.BearerAndApplicationScheme)
+            .AddScheme<AuthenticationSchemeOptions, CompositeIdentityHandler>(IdentityConstants.BearerAndApplicationScheme, null, compositeOptions =>
+            {
+                compositeOptions.ForwardDefault = IdentityConstants.BearerScheme;
+                compositeOptions.ForwardAuthenticate = IdentityConstants.BearerAndApplicationScheme;
+            })
+            .AddBearerToken(IdentityConstants.BearerScheme)
+            .AddIdentityCookies();
+ 
+        return services.AddIdentityCore<TUser>(configure)
+            .AddApiEndpoints();
+    }
+
+    public static IServiceCollection ConfigureApplicationCookie(this IServiceCollection services, Action<CookieAuthenticationOptions> configure)
+        => services.Configure(IdentityConstants.ApplicationScheme, configure);
+    
+    public static IServiceCollection ConfigureExternalCookie(this IServiceCollection services, Action<CookieAuthenticationOptions> configure)
+        => services.Configure(IdentityConstants.ExternalScheme, configure);
+ 
+    private sealed class PostConfigureSecurityStampValidatorOptions : IPostConfigureOptions<SecurityStampValidatorOptions>
+    {
+        public PostConfigureSecurityStampValidatorOptions(TimeProvider timeProvider)
+        {
+            TimeProvider = timeProvider;
+        }
+ 
+        private TimeProvider TimeProvider { get; }
+ 
+        public void PostConfigure(string? name, SecurityStampValidatorOptions options)
+        {
+            options.TimeProvider ??= TimeProvider;
+        }
+    }
+
+    private sealed class CompositeIdentityHandler
+        : SignInAuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        public CompositeIdentityHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder) 
+        {
+            // ....
+        }
+        
+        protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            var bearerResult = await Context.AuthenticateAsync(IdentityConstants.BearerScheme);
+ 
+            // Only try to authenticate with the application cookie if there is no bearer token.
+            if (!bearerResult.None)
+            {
+                return bearerResult;
+            }
+ 
+            // Cookie auth will return AuthenticateResult.NoResult() like bearer auth just did if there is no cookie.
+            return await Context.AuthenticateAsync(IdentityConstants.ApplicationScheme);
+        }
+ 
+        protected override Task HandleSignInAsync(ClaimsPrincipal user, AuthenticationProperties? properties)
+        {
+            throw new NotImplementedException();
+        }
+ 
+        protected override Task HandleSignOutAsync(AuthenticationProperties? properties)
+        {
+            throw new NotImplementedException();
+        }
+    }
 }
 //-----------------------------------------------------Ʌ
 
@@ -958,8 +1106,8 @@ public class UserClaimsPrincipalFactory<TUser> : IUserClaimsPrincipalFactory<TUs
         var userId = await UserManager.GetUserIdAsync(user).ConfigureAwait(false);
         var userName = await UserManager.GetUserNameAsync(user).ConfigureAwait(false);
         
-        // <------------------------"Identity.Application" is the default auth type
-        var id = new ClaimsIdentity("Identity.Application", Options.ClaimsIdentity.UserNameClaimType, Options.ClaimsIdentity.RoleClaimType);
+        // "Identity.Application" is the default auth type
+        var id = new ClaimsIdentity("Identity.Application", Options.ClaimsIdentity.UserNameClaimType, Options.ClaimsIdentity.RoleClaimType);  // <--------------------
 
         id.AddClaim(new Claim(Options.ClaimsIdentity.UserIdClaimType, userId));
         id.AddClaim(new Claim(Options.ClaimsIdentity.UserNameClaimType, userName!));

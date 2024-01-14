@@ -2029,8 +2029,8 @@ public class ExternalAuthHandler : IAuthenticationHandler
 //------------------------------Ʌ
 
 //------------------------------V
-public class ExternalSignInModel : PageModel
-{
+public class ExternalSignInModel : PageModel  // when user click "SignIn Externally" on the app's page, but ExternalSignInModel's "Get" page is the only relevent UI page which
+{                                             // will be used after the user sign in/vertify MFA. The "OnPost" or "OnGetCorrelate" redirect to different pages
     public ExternalSignInModel(SignInManager<AppUser> signInManager, UserManager<AppUser> userManager)
     {
         SignInManager = signInManager;
@@ -2042,6 +2042,7 @@ public class ExternalSignInModel : PageModel
 
     public string ProviderDisplayName { get; set; }
 
+    // this is the handler when user click the button for external sign in such as "SignIn by Google"
     public IActionResult OnPost(string providerName, string returnUrl = "/")  // <-----------------------------e1 providerName is demoAuth
     {
         // redirectUrl is "/ExternalSignIn?returnUrl=%2F&handler=Correlate"

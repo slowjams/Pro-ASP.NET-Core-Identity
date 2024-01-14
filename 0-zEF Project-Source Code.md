@@ -344,7 +344,7 @@ public static class IdentityCookieAuthenticationBuilderExtensions
 
     public static OptionsBuilder<CookieAuthenticationOptions> AddApplicationCookie(this AuthenticationBuilder builder)
     {
-        builder.AddCookie(IdentityConstants.ApplicationScheme, o =>  // <-------------------------
+        builder.AddCookie(IdentityConstants.ApplicationScheme, o =>  // <-------------calls builder.AddScheme<CookieAuthenticationOptions, CookieAuthenticationHandler>(...)
         {
             o.LoginPath = new PathString("/Account/Login");
             o.Events = new CookieAuthenticationEvents
@@ -1073,8 +1073,8 @@ public class GoogleOptions : OAuthOptions
 {
     public GoogleOptions()
     {
-        CallbackPath = new PathString("/signin-google");  // <------------------------------
-        AuthorizationEndpoint = GoogleDefaults.AuthorizationEndpoint;
+        CallbackPath = new PathString("/signin-google");               // <------------------------------
+        AuthorizationEndpoint = GoogleDefaults.AuthorizationEndpoint;  // <------------------------------
         TokenEndpoint = GoogleDefaults.TokenEndpoint;
         UserInformationEndpoint = GoogleDefaults.UserInformationEndpoint;
         UsePkce = true;
@@ -1566,8 +1566,9 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
         }
  
         parameters["state"] = Options.StateDataFormat.Protect(properties);
- 
-        return QueryHelpers.AddQueryString(Options.AuthorizationEndpoint, parameters!);
+
+        // Options.AuthorizationEndpoint is "https://accounts.google.com/o/oauth2/v2/auth"
+        return QueryHelpers.AddQueryString(Options.AuthorizationEndpoint, parameters!);  // <-------------------------------------
     }
 
     protected virtual string FormatScope(IEnumerable<string> scopes)
@@ -1755,7 +1756,7 @@ internal sealed class ExternalLoginModel<TUser> : ExternalLoginModel where TUser
         return new ChallengeResult(provider, properties);
     }
 
-    public override async Task<IActionResult> OnGetCallbackAsync(string? returnUrl = null, string? remoteError = null)  // <---------------------e5.1
+    public override async Task<IActionResult> OnGetCallbackAsync(string? returnUrl = null, string? remoteError = null)  // <----------------e5.1, it is like OnGetCorrelate
     {
         returnUrl = returnUrl ?? Url.Content("~/");
         if (remoteError != null)
@@ -1887,4 +1888,28 @@ internal sealed class ExternalLoginModel<TUser> : ExternalLoginModel where TUser
 ```
 
 
-## Application Code
+## Identity UI Scaffolding
+
+```C# install required packages
+dotnet tool install --global dotnet-aspnet-codegenerator --version 5.0.0
+
+dotnet add package Microsoft.VisualStudio.Web.CodeGeneration.Design --version 5.0.0
+```
+
+```C# show available Razor pages to overwrite
+dotnet aspnet-codegenerator identity --listFiles
+
+...
+Account._StatusMessage
+Account.AccessDenied
+Account.ConfirmEmail
+Account.ConfirmEmailChange
+Account.ExternalLogin
+Account.ForgotPassword
+... 
+```
+
+```C# Scaffolding an Identity UI Razor Page
+// create Login.cshtm under Areas/Identity/Pages/Account so users can overwrite it
+dotnet aspnet-codegenerator identity --dbContext Microsoft.AspNetCore.Identity.EntityFrameworkCore.IdentityDbContext --files Account.Login
+```
