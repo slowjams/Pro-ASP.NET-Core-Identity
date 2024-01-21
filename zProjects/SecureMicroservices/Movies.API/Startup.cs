@@ -13,6 +13,9 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Movies.API.Data;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 
 namespace Movies.API
 {
@@ -28,7 +31,6 @@ namespace Movies.API
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
-
             services.AddControllers();
             services.AddSwaggerGen(c =>
             {
@@ -37,6 +39,13 @@ namespace Movies.API
 
             services.AddDbContext<MoviesAPIContext>(options =>
                     options.UseInMemoryDatabase("Movies"));
+
+            services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)          
+                .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, opts =>
+                {
+                   opts.Authority = "https://localhost:5005",
+                   opts.TokenValidationParameters = new TokenValidationParameters { ValidateAudience = false };
+                });
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -52,6 +61,8 @@ namespace Movies.API
             app.UseHttpsRedirection();
 
             app.UseRouting();
+
+            app.UseAuthentication();
 
             app.UseAuthorization();
 
