@@ -43,7 +43,7 @@ namespace Movies.API
             services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)          
                 .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, opts =>
                 {
-                   opts.Authority = "https://localhost:5005",
+                   opts.Authority = "https://localhost:5005";
                    opts.TokenValidationParameters = new TokenValidationParameters { ValidateAudience = false };
                 });
         }

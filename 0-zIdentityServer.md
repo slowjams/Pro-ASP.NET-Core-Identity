@@ -16,7 +16,7 @@ public class Startup
 
         app.UseRouting();
 
-        app.UseIdentityServer();  // <-------------------------
+        app.UseIdentityServer();  // <-------------------------a0
 
         app.UseEndpoints(...);
     }
@@ -266,7 +266,7 @@ public static class IdentityServerApplicationBuilderExtensions
     {
         app.Validate();
  
-        app.UseMiddleware<BaseUrlMiddleware>();
+        app.UseMiddleware<BaseUrlMiddleware>();  // <---------------------------------------a0.1
  
         app.ConfigureCors();
  
@@ -274,8 +274,8 @@ public static class IdentityServerApplicationBuilderExtensions
         if (options == null) options = new IdentityServerMiddlewareOptions();
         options.AuthenticationMiddleware(app);
  
-        app.UseMiddleware<MutualTlsEndpointMiddleware>();
-        app.UseMiddleware<IdentityServerMiddleware>();
+        app.UseMiddleware<MutualTlsEndpointMiddleware>();  // <---------------------------------------a0.2
+        app.UseMiddleware<IdentityServerMiddleware>();     // <--------------------------------------!a0.3.
  
         return app;
     }
@@ -296,7 +296,7 @@ public class IdentityServerMiddleware
         _logger = logger;
     }
 
-    public async Task Invoke(HttpContext context, IEndpointRouter router, IUserSession session, IEventService events, IBackChannelLogoutService backChannelLogoutService)
+    public async Task Invoke(HttpContext context, IEndpointRouter router, IUserSession session, IEventService events, IBackChannelLogoutService backChannelLogoutService)  // a1.0
     {
         // this will check the authentication session and from it emit the check session cookie needed from JS-based signout clients.
         await session.EnsureSessionIdCookieAsync();
@@ -319,14 +319,14 @@ public class IdentityServerMiddleware
 
         try
         {
-            var endpoint = router.Find(context);
+            var endpoint = router.Find(context);   // <-----------------------a1.1
             if (endpoint != null)
             { 
-                var result = await endpoint.ProcessAsync(context);  // <-----------------------------------------
+                var result = await endpoint.ProcessAsync(context);  // <--------------------a1.2
  
                 if (result != null)
                 {
-                    await result.ExecuteAsync(context);
+                    await result.ExecuteAsync(context);  // <--------------------a1.3
                 }
  
                 return;
@@ -1589,6 +1589,90 @@ internal class TokenEndpoint : IEndpointHandler
 ## Helpers
 
 ```C# 
+public static class UIConstants
+{
+    // the limit after which old messages are purged
+    public const int CookieMessageThreshold = 2;
+ 
+    public static class DefaultRoutePathParams
+    {
+        public const string Error = "errorId";
+        public const string Login = "returnUrl";
+        public const string Consent = "returnUrl";
+        public const string Logout = "logoutId";
+        public const string EndSessionCallback = "endSessionId";
+        public const string Custom = "returnUrl";
+        public const string UserCode = "userCode";
+    }
+ 
+    public static class DefaultRoutePaths
+    {
+        public const string Login = "/account/login";
+        public const string Logout = "/account/logout";
+        public const string Consent = "/consent";
+        public const string Error = "/home/error";
+        public const string DeviceVerification = "/device";
+    }
+}
+
+public static class EndpointNames
+{
+    public const string Authorize = "Authorize";
+    public const string Token = "Token";
+    public const string DeviceAuthorization = "DeviceAuthorization";
+    public const string Discovery = "Discovery";
+    public const string Introspection = "Introspection";
+    public const string Revocation = "Revocation";
+    public const string EndSession = "Endsession";
+    public const string CheckSession = "Checksession";
+    public const string UserInfo = "Userinfo";
+}
+
+public static class ProtocolRoutePaths
+{
+    public const string ConnectPathPrefix       = "connect";
+ 
+    public const string Authorize               = ConnectPathPrefix + "/authorize";
+    public const string AuthorizeCallback       = Authorize + "/callback";
+    public const string DiscoveryConfiguration  = ".well-known/openid-configuration";
+    public const string DiscoveryWebKeys        = DiscoveryConfiguration + "/jwks";
+    public const string Token                   = ConnectPathPrefix + "/token";
+    public const string Revocation              = ConnectPathPrefix + "/revocation";
+    public const string UserInfo                = ConnectPathPrefix + "/userinfo";
+    public const string Introspection           = ConnectPathPrefix + "/introspect";
+    public const string EndSession              = ConnectPathPrefix + "/endsession";
+    public const string EndSessionCallback      = EndSession + "/callback";
+    public const string CheckSession            = ConnectPathPrefix + "/checksession";
+    public const string DeviceAuthorization     = ConnectPathPrefix + "/deviceauthorization";
+ 
+    public const string MtlsPathPrefix          = ConnectPathPrefix + "/mtls";
+    public const string MtlsToken               = MtlsPathPrefix + "/token";
+    public const string MtlsRevocation          = MtlsPathPrefix + "/revocation";
+    public const string MtlsIntrospection       = MtlsPathPrefix + "/introspect";
+    public const string MtlsDeviceAuthorization = MtlsPathPrefix + "/deviceauthorization";
+ 
+    public static readonly string[] CorsPaths =
+    {
+        DiscoveryConfiguration,
+        DiscoveryWebKeys,
+        Token,
+        UserInfo,
+        Revocation
+    };
+}
+
+public static class TokenTypeHints
+{
+    public const string RefreshToken = "refresh_token";
+    public const string AccessToken  = "access_token";
+}
+ 
+public static List<string> SupportedTokenTypeHints = new List<string>
+{
+    TokenTypeHints.RefreshToken,
+    TokenTypeHints.AccessToken
+};
+
 internal class Decorator<TService>
 {
     public TService Instance { get; set; }
@@ -1602,5 +1686,66 @@ internal class Decorator<TService>
 internal class Decorator<TService, TImpl> : Decorator<TService> where TImpl : class, TService
 {
     public Decorator(TImpl instance) : base(instance) { }
+}
+```
+
+```json 
+// i2, result from calling https://localhost:5005/.well-known/openid-configuration
+{
+  "issuer": "https://localhost:5005",
+  "jwks_uri": "https://localhost:5005/.well-known/openid-configuration/jwks",
+  "authorization_endpoint": "https://localhost:5005/connect/authorize",
+  "token_endpoint": "https://localhost:5005/connect/token",
+  "userinfo_endpoint": "https://localhost:5005/connect/userinfo",
+  "end_session_endpoint": "https://localhost:5005/connect/endsession",
+  "check_session_iframe": "https://localhost:5005/connect/checksession",
+  "revocation_endpoint": "https://localhost:5005/connect/revocation",
+  "introspection_endpoint": "https://localhost:5005/connect/introspect",
+  "device_authorization_endpoint": "https://localhost:5005/connect/deviceauthorization",
+  "frontchannel_logout_supported": true,
+  "frontchannel_logout_session_supported": true,
+  "backchannel_logout_supported": true,
+  "backchannel_logout_session_supported": true,
+  "scopes_supported": [
+    "movieAPI",
+    "offline_access"
+  ],
+  "claims_supported": [],
+  "grant_types_supported": [
+    "authorization_code",
+    "client_credentials",
+    "refresh_token",
+    "implicit",
+    "urn:ietf:params:oauth:grant-type:device_code"
+  ],
+  "response_types_supported": [
+    "code",
+    "token",
+    "id_token",
+    "id_token token",
+    "code id_token",
+    "code token",
+    "code id_token token"
+  ],
+  "response_modes_supported": [
+    "form_post",
+    "query",
+    "fragment"
+  ],
+  "token_endpoint_auth_methods_supported": [
+    "client_secret_basic",
+    "client_secret_post"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "RS256"
+  ],
+  "subject_types_supported": [
+    "public"
+  ],
+  "code_challenge_methods_supported": [
+    "plain",
+    "S256"
+  ],
+  "request_parameter_supported": true
 }
 ```
