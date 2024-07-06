@@ -178,6 +178,8 @@ public class AuthenticationMiddleware
             return;
       }
  
+
+      // <--------------------------------------------this is extremely important, AuthenticationMiddleware only runs default scheme authentication
       AuthenticationScheme defaultAuthenticate = await Schemes.GetDefaultAuthenticateSchemeAsync();  // use AuthenticationOptions.DefaultAuthenticateScheme if it exsits
                                                                                                      // if not then AuthenticationOptions.DefaultScheme
       if (defaultAuthenticate != null)                                             
@@ -188,15 +190,16 @@ public class AuthenticationMiddleware
                                                                                                   // via AuthenticationService
          if (result?.Principal != null)  // query from the wrapped AuthenticationTicket in AuthenticateResult
          {
-            context.User = result.Principal;   // <--------------------------------------a3 important! that's the main purpose of AuthenticationMiddleware whihc is to set a
-                                               // ClaimsPrincipal on HttpContext.User, note that it is not and should not be set in IAuthenticationHandler.AuthenticateAsync()
+            context.User = result.Principal;  // <-------------a3 important! that's the main purpose of AuthenticationMiddleware which is to set a ClaimsPrincipal on HttpContext.User
+                                            
          }
          if (result?.Succeeded ?? false)
          {
             var authFeatures = new AuthenticationFeatures(result);
             context.Features.Set<IHttpAuthenticationFeature>(authFeatures);
-            context.Features.Set<IAuthenticateResultFeature>(authFeatures);  // <------------cache the result so that it could be used by PolicyEvaluator later when there is no
-                                                                             // AuthenticationScheme specified in the  [Authorize( AuthenticationSchemes = "xxx, yyy")]
+            context.Features.Set<IAuthenticateResultFeature>(authFeatures);  // <------------cache the result so that it could be used by PolicyEvaluator later when there is extra
+                                                                             // AuthenticationScheme specified on endpoints as [Authorize( AuthenticationSchemes = "xxx, yyy")]
+                                                                             // so that the default scheme's authentication won't run again unnecessarily
          }
       }
 
@@ -230,7 +233,7 @@ public interface IAuthenticationSignOutHandler : IAuthenticationHandler
 //-------------------------------------------Ʌ
 
 //-------------------------------------------V
-public interface IAuthenticationRequestHandler : IAuthenticationHandler // Uuually implementation of this interface are remote auth implementation like Google, Facebook etc
+public interface IAuthenticationRequestHandler : IAuthenticationHandler // Usually implementation of this interface are remote auth implementation like Google, Facebook etc
 {
    Task<bool> HandleRequestAsync();
 }
@@ -506,7 +509,7 @@ public class AuthenticateResult
    
    protected AuthenticateResult() { }
 
-   public bool Succeeded => Ticket != null;   // <-----------------succeeded if it has a Ticket
+   public bool Succeeded => Ticket != null;   // <-----------------important succeeded if it has a Ticket
 
    public AuthenticationTicket? Ticket { get; protected set; }
 
@@ -1407,8 +1410,8 @@ public class AuthorizationMiddleware
          }      
       }
 
-      // if you use [Authorize] even though there is no any arguemnt being used then policy will not be null
-      if (policy == null)   // <-----------that's why default project template can only have app.UseAuthorization() not app.UseAuthentication() in the startup.cs
+      // policy won't be null if we use [Authorize] attribute, the policy will contain a DenyAnonymousAuthorizationRequirement
+      if (policy == null)  // <---------------policy is null for those endpoints who are not used with [Authorize] attribute
       {
          await _next(context);
          return;
@@ -1416,9 +1419,12 @@ public class AuthorizationMiddleware
 
       var policyEvaluator = context.RequestServices.GetRequiredService<IPolicyEvaluator>();
 
+      // this is important, authorization process will actually invoke authentication process, the authentication process in the AuthenticationMiddleware only
+      // invoke authentication process for default auth scheme, but authorization process in AuthenticationMiddlwarfe will do authentication process for each
+      // auth scheme specified in e.g [Authorize(AuthenticationSchemes = "Foo, Bar")]
       AuthenticateResult authenticateResult =                       
          await policyEvaluator.AuthenticateAsync(policy, context);  // <-------------------------------b3!, counter intuitive, AuthorizationMiddleware does Authenticate process
-                                                                    // This is when non-default scheme's handler, defined in Authorization process gets called
+                                                                    // This is when non-default scheme's handler called when we do [Authorize(AuthenticationSchemes = "xxx, yyy")]
       if (authenticateResult?.Succeeded ?? false)
       {
          if (context.Features.Get<IAuthenticateResultFeature>() is IAuthenticateResultFeature authenticateResultFeature)
@@ -1455,9 +1461,6 @@ public class AuthorizationMiddleware
          resource = context;
       }
  
-      // this is important, authorization process will actually invoke authentication process, the authentication process in the AuthenticationMiddleware only
-      // invoke authentication process for default auth scheme, but authorization process in AuthenticationMiddlwarfe will do authentication process for each
-      // auth scheme specified in e.g [Authorize(AuthenticationSchemes = "Foo, Bar")]
       var authorizeResult = await policyEvaluator.AuthorizeAsync(policy, authenticateResult!, context, resource);  // <----------------------b4
       // look like we can check authenticateResult here and return 401, but the idea is authorize the request to see if it is 403 then see whether to return 401 or 403
       var authorizationMiddlewareResultHandler = context.RequestServices.GetRequiredService<IAuthorizationMiddlewareResultHandler>();
@@ -1843,9 +1846,10 @@ public class PolicyEvaluator : IPolicyEvaluator
 
    public virtual async Task<AuthenticateResult> AuthenticateAsync(AuthorizationPolicy policy, HttpContext context)
    {
+      // policy.AuthenticationSchemes doesn't contain default scheme
       if (policy.AuthenticationSchemes != null && policy.AuthenticationSchemes.Count > 0)  // if users doesn't specify AuthenticationSchemes in a policy, that means 
-      {                                                                                    // we can jump to context.Features.Get<IAuthenticateResultFeature>()?.AuthenticateResult
-         ClaimsPrincipal? newPrincipal = null;                                             // which is set by AuthenticationMiddleware in the first place
+      {                                                                                    // we can jump to last line for getting AuthenticateResult cache purpose
+         ClaimsPrincipal? newPrincipal = null;                                            
          DateTimeOffset? minExpiresUtc = null;
          foreach (var scheme in policy.AuthenticationSchemes)  // <----------as long as one authenticates, all success
          {
@@ -1879,6 +1883,7 @@ public class PolicyEvaluator : IPolicyEvaluator
          }
       }
 
+      // <---------------this is to get the cache for the default scheme's authenticate result in the first place
       return context.Features.Get<IAuthenticateResultFeature>()?.AuthenticateResult ?? DefaultAuthenticateResult(context);
 
       static AuthenticateResult DefaultAuthenticateResult(HttpContext context)

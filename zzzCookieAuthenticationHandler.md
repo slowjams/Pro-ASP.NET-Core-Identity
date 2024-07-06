@@ -16,7 +16,7 @@ public class Startup
         services.AddAuthentication(opts => {  // opts is AuthenticationOptions
             opts.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;   // DefaultScheme is ""Cookies"
         }).AddCookie(opts => {
-            opts.LoginPath = "/signin";
+            opts.LoginPath = "/signin";   // <---------------for "401 Challenge" purpose
             opts.AccessDeniedPath = "/signin/403";
         });
 
@@ -37,6 +37,48 @@ public class Startup
 }
 //------------------Ʌ
 ```
+
+```C#
+public class SignInModel : PageModel    // this is the "/signin" razor page for LoginPath set above
+{
+    public async Task OnPost(string username)
+    {
+        Claim claim = new Claim(ClaimTypes.Name, username);
+        ClaimsIdentity ident = new ClaimsIdentity("simpleform");
+        ident.AddClaim(claim);
+		
+		await HttpContext.SignInAsync(new ClaimsPrincipal(ident));  // <------------------- calls `CookieAuthenticationHandler.HandleSignInAsync()` interally
+    }
+		 
+	/* <----------------------------------------------------------------------------------incorrect usage to redirect
+	public async Task<ActionResult> OnPost(string username, [FromQuery]string returnUrl)
+    {
+        Claim claim = new Claim(ClaimTypes.Name, username);
+        ClaimsIdentity ident = new ClaimsIdentity("simpleform");
+        ident.AddClaim(claim);
+		await HttpContext.SignInAsync(new ClaimsPrincipal(ident));
+        return Redirect(returnUrl ?? "/signin");   // <-------------no need to redirect manually, CookieAuthenticationHandler does it automatically for you, check ApplyHeaders method
+    }
+	*/
+}
+```
+
+When you're trying to access http://localhost:5000/secret unauthenticated, the following things happenes in sequence:
+
+1. The server receives this request, since this request is the first time without any cookies, when `CookieAuthenticationHandler.HandleAuthenticateAsync()` called by `AuthenticationMiddleware`, there is no deserialiable `AuthenticationTicket` can be generated from cookies, so `CookieAuthenticationHandler.HandleChallengeAsync()` is called (note that `HandleChallengeAsync` is not called by `AuthenticationMiddleware` but `AuthorizationMiddleware`, see other page for further info)
+The purpose of `HandleChallengeAsync` call is to generate an url (`LoginPath` + original url segment "/secret") and redirect this url to user's browser
+
+2. User's browser recevieds the redirection request and send another request with url being http://localhost:5000/signin?ReturnUrl=%2Fsecret for server's SignInModel razor page to handle it.User fills the form and click Submit, razor's OnPost handles the requests and then `HttpContext.SignInAsync()` is called
+
+3. When`HttpContext.SignInAsync()` is called, it calls `CookieAuthenticationHandler.HandleSignInAsync()` interally, `HandleSignInAsync` constructs an instance `AuthenticationTicket` based on `ClaimsPrincipal` argument, this `AuthenticationTicket` is serilized into cookie and then `HandleSignInAsync` generate a redirect request with url being original http://localhost:5000/secret to client's browser.
+
+4. Client's browser finally sends a request to the secret url, now this request contains "AuthenticationTicket" cookie
+
+
+==============================================================================================================
+
+## Source Code 
+
 
 ```C#
 //----------------------------------------------<<
@@ -295,6 +337,7 @@ public class CookieAuthenticationHandler : SignInAuthenticationHandler<CookieAut
          RequestRefresh(result.Ticket, context.Principal);
       }
  
+      // <-------------------------create and pass a AuthenticationTicket to AuthenticationMiddleware
       return AuthenticateResult.Success(new AuthenticationTicket(context.Principal, context.Properties, Scheme.Name));
    }
 
