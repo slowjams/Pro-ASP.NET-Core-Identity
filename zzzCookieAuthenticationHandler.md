@@ -47,7 +47,7 @@ public class SignInModel : PageModel    // this is the "/signin" razor page for 
         ClaimsIdentity ident = new ClaimsIdentity("simpleform");
         ident.AddClaim(claim);
 		
-		await HttpContext.SignInAsync(new ClaimsPrincipal(ident));  // <------------------- calls `CookieAuthenticationHandler.HandleSignInAsync()` interally
+		await HttpContext.SignInAsync(new ClaimsPrincipal(ident));  // <------ calls `CookieAuthenticationHandler.HandleSignInAsync()` interally and it will send redirect request back to user
     }
 		 
 	/* <----------------------------------------------------------------------------------incorrect usage to redirect
@@ -74,6 +74,17 @@ The purpose of `HandleChallengeAsync` call is to generate an url (`LoginPath` + 
 
 4. Client's browser finally sends a request to the secret url, now this request contains "AuthenticationTicket" cookie
 
+The pipeline is:
+
+1st request  -------------> `AuthenticationMiddleware` (calls `CookieAuthenticationHandler.HandleAuthenticateAsync`) ------------------> `AuthorizationMiddleware` (calls `CookieAuthenticationHandler.HandleChallengeAsync` which sends a redirect request with url being pre-defined signin + returnUrl)
+
+2st request, first redirection (for signin page)  -------------> `AuthenticationMiddleware` (calls `CookieAuthenticationHandler.HandleAuthenticateAsync`, still no ticket like first request) ------------------> `AuthorizationMiddleware` (does nothing here, it doesn't call `CookieAuthenticationHandler.HandleChallengeAsync` this time as Signin razor page won't have `[Authorize]`)
+------------------> request goes to mvc pipeline ---------------------->signin page return to user
+
+3rd request (post signin details) -------------> `AuthenticationMiddleware` (calls `CookieAuthenticationHandler.HandleAuthenticateAsync`, still no ticket) -----------------> `AuthorizationMiddleware` does nothing ----------> request goes to mvc pipeline ( `HttpContext.SignInAsync` called) ----------------> `CookieAuthenticationHandler.HandleSignInAsync()` called
+and create a  `AuthenticationTicket` and serialized it into response cookie, `CookieAuthenticationHandler` also prepare another redirection request and send it to user
+
+4rd request, second redirection -------------> `AuthenticationMiddleware` (calls `CookieAuthenticationHandler.HandleAuthenticateAsync`, now there is a ticket) --------------> .....
 
 ==============================================================================================================
 

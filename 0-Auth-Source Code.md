@@ -1461,8 +1461,12 @@ public class AuthorizationMiddleware
          resource = context;
       }
  
-      var authorizeResult = await policyEvaluator.AuthorizeAsync(policy, authenticateResult!, context, resource);  // <----------------------b4
-      // look like we can check authenticateResult here and return 401, but the idea is authorize the request to see if it is 403 then see whether to return 401 or 403
+      var authorizeResult =  await policyEvaluator.AuthorizeAsync(  // <----------------------b4 ! important calls DefaultAuthorizationService.AuthorizeAsync internally which 
+         policy,                                                    // in turn get user-defined IAuthorizationHandler.HandleAsync
+         authenticateResult!, 
+         context, 
+         resource);
+
       var authorizationMiddlewareResultHandler = context.RequestServices.GetRequiredService<IAuthorizationMiddlewareResultHandler>();
       
       await authorizationMiddlewareResultHandler.HandleAsync(_next, context, policy, authorizeResult); // <---------------------b5, call IAuthenticationHandler.ChallengeAsync()
@@ -1536,7 +1540,7 @@ public class AuthorizationHandlerContext
       => (IEnumerable<AuthorizationFailureReason>?)_failedReasons ?? Array.Empty<AuthorizationFailureReason>();
 
    public virtual bool HasFailed { get { return _failCalled; } }
-   public virtual bool HasSucceeded
+   public virtual bool HasSucceeded     // <-----------------------------
    {
       get {
          return !_failCalled && _succeedCalled && !PendingRequirements.Any();
@@ -2027,7 +2031,7 @@ public class AuthorizationMiddlewareResultHandler : IAuthorizationMiddlewareResu
       {
          if (authorizeResult.Challenged)
          {
-            if (policy.AuthenticationSchemes.Count > 0)
+            if (policy.AuthenticationSchemes.Count > 0)  // n1
             {
                foreach (var scheme in policy.AuthenticationSchemes)
                {
@@ -2036,7 +2040,7 @@ public class AuthorizationMiddlewareResultHandler : IAuthorizationMiddlewareResu
             }
             else
             {
-               await context.ChallengeAsync();
+               await context.ChallengeAsync();   // <--------------n1 call default IAuthenticationHandler.ChallengeAsync when there is no non-default scheme used in Authorize attribute
             }
          }
          else if (authorizeResult.Forbidden)
