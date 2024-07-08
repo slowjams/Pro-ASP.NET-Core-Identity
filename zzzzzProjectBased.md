@@ -152,6 +152,8 @@ public class PolicyEvaluator : IPolicyEvaluator
 
 you can see if there is a failed `AuthenticateResult`, `_authorization.AuthorizeAsync(context.User, resource, policy)` still runs, so if you have all `IAuthorizationRequirement` pass, the response is 200, not 401, and if the `IAuthorizationRequirement` fails, response is "401 Unauthorized" is it a huge bug by .NET team? https://github.com/dotnet/aspnetcore/issues/56656
 
+emmmmm, looks like I messed it up because of two project in one solution, when we use `[Authorize(Policy = "xxx")]`, it automatically creates a `DenyAnonymousAuthorizationRequirement`. 
+
 
 
 ## Default Scheme and Non-default Scheme When It Comes to Challenge

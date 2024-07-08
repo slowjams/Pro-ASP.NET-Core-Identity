@@ -2131,7 +2131,7 @@ public class ExternalAuthOptions
 //------------------------------Ʌ
 
 //------------------------------V
-public class ExternalAuthHandler : IAuthenticationRequestHandler
+public class ExternalAuthHandler : IAuthenticationRequestHandler  // <-----------------IAuthenticationRequestHandler is important
 {
     public ExternalAuthHandler(IOptions<ExternalAuthOptions> options, IDataProtectionProvider dp, ILogger<ExternalAuthHandler> logger)
     {
@@ -2160,7 +2160,7 @@ public class ExternalAuthHandler : IAuthenticationRequestHandler
 
     public Task<AuthenticateResult> AuthenticateAsync()  // doesn't do authentication as you want external auth service does the job
     {
-        return Task.FromResult(AuthenticateResult.NoResult());
+        return Task.FromResult(AuthenticateResult.NoResult());   // <--------------important
     }
 
     public async Task ChallengeAsync(AuthenticationProperties properties)  // < ----------ee1.2 note that there are three different "return url" here,  
@@ -2194,9 +2194,11 @@ public class ExternalAuthHandler : IAuthenticationRequestHandler
         return Task.FromResult(Options.AuthenticationUrl + QueryString.Create(qs));
     }
 
+    // http://localhost:5000/signin-google will be registered on Googe OAuth config as "Authorized redirect URL",
+    // looks like "signin-google" segment can be anything as long as you intercept the same one in the app
     public virtual async Task<bool> HandleRequestAsync()  // <----------------ee4.0 intercept the "xxx/signin-external" request which is initialized by Google as below
     {                                                     // http://localhost:5000/signin-google?state=xxx&code=yyy&scope=email+profile+zzz&authuser=0&prompt=none
-        if (Context.Request.Path.Equals(Options.RedirectPath)) // when RedirectPath is "signin-external", literally it can be any url? must be another good approach?
+        if (Context.Request.Path.Equals(Options.RedirectPath)) // when RedirectPath is "signin-external", note it only compare path, doesn't include query string
         {
             string authCode = Context.Request.Query["code"].ToString();  // authCode is sent by externl service
             (string token, string state) = await GetAccessToken(authCode);  // <-----------ee4.1 exchanging the Authorization Code for an Access Token
@@ -2210,10 +2212,11 @@ public class ExternalAuthHandler : IAuthenticationRequestHandler
                     ClaimsPrincipal claimsPrincipal = new ClaimsPrincipal(identity);
                     AuthenticationProperties props = PropertiesFormatter.Unprotect(state);
 
-                    await Context.SignInAsync(IdentityConstants.ExternalScheme, claimsPrincipal, props);  // <--------------! ee6, call Context.SignInAsync here, compared to
-                                                                                                          // before SignIn is called in ExternalAuthHandler.ChallengeAsync()
-                    Context.Response.Redirect(props.RedirectUri);  // RedirectUri is "/ExternalSignIn?returnUrl=%2F&handler=Correlate"
-
+                    await Context.SignInAsync(IdentityConstants.ExternalScheme, claimsPrincipal, props);  // <--------------------------------------! ee6, 
+                    // call Context.SignInAsync here, which invoke CookieAuthenticationHandler.HandleSignInAsync to generate ticket cookie so user state can persist in next request
+                                                                                                          
+                    Context.Response.Redirect(props.RedirectUri);   // RedirectUri is ExternalSignIn?returnUrl=secret%2F&handler=Correlate.
+                                                                    // now users can access and redirect on the secret page (assuming users first access the secret page)
                     return true;
                 }
             }
