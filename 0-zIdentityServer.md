@@ -24,6 +24,14 @@ public class Startup
 //------------------Ʌ
 ```
 
+* How does `.well-known/openid-configuration` response get generated? `IdentityServerMiddleware` q1
+
+
+
+=====================================================================================================================
+
+## Source Code
+
 ```C#
 //-----------------------------------------------------------V
 public static class IdentityServerServiceCollectionExtensions
@@ -110,14 +118,14 @@ public static class IdentityServerBuilderExtensionsCore
 
     public static IIdentityServerBuilder AddDefaultEndpoints(this IIdentityServerBuilder builder)
     {
-        builder.Services.AddTransient<IEndpointRouter, EndpointRouter>();
+        builder.Services.AddTransient<IEndpointRouter, EndpointRouter>();  // <---------------------------------q1, it is IdentityServer's own Router like UseRouting()
  
         builder.AddEndpoint<AuthorizeCallbackEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.AuthorizeCallback.EnsureLeadingSlash());
         builder.AddEndpoint<AuthorizeEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.Authorize.EnsureLeadingSlash());
         builder.AddEndpoint<CheckSessionEndpoint>(EndpointNames.CheckSession, ProtocolRoutePaths.CheckSession.EnsureLeadingSlash());
         builder.AddEndpoint<DeviceAuthorizationEndpoint>(EndpointNames.DeviceAuthorization, ProtocolRoutePaths.DeviceAuthorization.EnsureLeadingSlash());
         builder.AddEndpoint<DiscoveryKeyEndpoint>(EndpointNames.Discovery, ProtocolRoutePaths.DiscoveryWebKeys.EnsureLeadingSlash());
-        builder.AddEndpoint<DiscoveryEndpoint>(EndpointNames.Discovery, ProtocolRoutePaths.DiscoveryConfiguration.EnsureLeadingSlash());
+        builder.AddEndpoint<DiscoveryEndpoint>(EndpointNames.Discovery, ProtocolRoutePaths.DiscoveryConfiguration.EnsureLeadingSlash());  // <---------------q1
         builder.AddEndpoint<EndSessionCallbackEndpoint>(EndpointNames.EndSession, ProtocolRoutePaths.EndSessionCallback.EnsureLeadingSlash());
         builder.AddEndpoint<EndSessionEndpoint>(EndpointNames.EndSession, ProtocolRoutePaths.EndSession.EnsureLeadingSlash());
         builder.AddEndpoint<IntrospectionEndpoint>(EndpointNames.Introspection, ProtocolRoutePaths.Introspection.EnsureLeadingSlash());
@@ -275,7 +283,7 @@ public static class IdentityServerApplicationBuilderExtensions
         options.AuthenticationMiddleware(app);
  
         app.UseMiddleware<MutualTlsEndpointMiddleware>();  // <---------------------------------------a0.2
-        app.UseMiddleware<IdentityServerMiddleware>();     // <--------------------------------------!a0.3.
+        app.UseMiddleware<IdentityServerMiddleware>();     // <--------------------------------------!a0.3., q1
  
         return app;
     }
@@ -319,7 +327,7 @@ public class IdentityServerMiddleware
 
         try
         {
-            var endpoint = router.Find(context);   // <-----------------------a1.1
+            var endpoint = router.Find(context);   // <-----------------------a1.1, q1
             if (endpoint != null)
             { 
                 var result = await endpoint.ProcessAsync(context);  // <--------------------a1.2
@@ -342,6 +350,64 @@ public class IdentityServerMiddleware
     }
 }
 //-----------------------------------Ʌ
+
+//---------------------------V
+
+internal class EndpointRouter : IEndpointRouter
+{
+    private readonly IEnumerable<Endpoint> _endpoints;   // <---------------q1, registered in AddDefaultEndpoints
+    private readonly IdentityServerOptions _options;
+    private readonly ILogger _logger;
+
+    public EndpointRouter(IEnumerable<Endpoint> endpoints, IdentityServerOptions options, ILogger<EndpointRouter> logger)
+    {
+        _endpoints = endpoints;
+        _options = options;
+        _logger = logger;
+    }
+
+    public IEndpointHandler Find(HttpContext context)
+    {
+        if (context == null) throw new ArgumentNullException(nameof(context));
+
+        foreach(var endpoint in _endpoints)   // q1
+        {
+            var path = endpoint.Path;
+            if (context.Request.Path.Equals(path, StringComparison.OrdinalIgnoreCase))
+            {
+                var endpointName = endpoint.Name;
+                _logger.LogDebug("Request path {path} matched to endpoint type {endpoint}", context.Request.Path, endpointName);
+
+                return GetEndpointHandler(endpoint, context);
+            }
+        }
+
+        _logger.LogTrace("No endpoint entry found for request path: {path}", context.Request.Path);
+
+        return null;
+    }
+
+    private IEndpointHandler GetEndpointHandler(Endpoint endpoint, HttpContext context)
+    {
+        if (_options.Endpoints.IsEndpointEnabled(endpoint))
+        {
+            if (context.RequestServices.GetService(endpoint.Handler) is IEndpointHandler handler)
+            {
+                _logger.LogDebug("Endpoint enabled: {endpoint}, successfully created handler: {endpointHandler}", endpoint.Name, endpoint.Handler.FullName);
+                return handler;
+            }
+
+            _logger.LogDebug("Endpoint enabled: {endpoint}, failed to create handler: {endpointHandler}", endpoint.Name, endpoint.Handler.FullName);
+        }
+        else
+        {
+            _logger.LogWarning("Endpoint disabled: {endpoint}", endpoint.Name);
+        }
+
+        return null;
+    }
+}
+//---------------------------Ʌ
 
 //--------------------------------V
 public class IdentityServerOptions

@@ -2347,6 +2347,7 @@ public class DemoExternalAuthController : Controller  // demonstrate external au
             {
                 // localhost:5000/signin-external?code=12345&scope=openid email profile&state=xxx_
                 //For Google, redirect_uri needs to be pre registered when configuring Google's OAuth
+                // we just pass the return url from the view for simplicity as we don't want to maintain different client in this controller and lookup registered url
                 return  Redirect(info.redirect_uri + $"?code={user.Code}&scope={info.scope}" + $"&state={info.state}");  //<------------------------------------------ee3.1.
                 /* why OAuth need an extra that use both authCode and access token, why not just use access token
                 because OAuth like Google need to redirect user to an URL that will be intercepted by application's server(IAuthenticationRequestHandler.HandleRequestAsync())
