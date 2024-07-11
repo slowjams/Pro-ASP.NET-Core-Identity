@@ -24,13 +24,112 @@ public class Startup
 //------------------Ʌ
 ```
 
-* How does `.well-known/openid-configuration` response get generated? `IdentityServerMiddleware` q1
 
-
+* How does `.well-known/openid-configuration` response get generated? Inside `IdentityServerMiddleware` q1
 
 =====================================================================================================================
 
 ## Source Code
+
+```json
+{
+    "issuer": "https://localhost:5001",
+    "jwks_uri": "https://localhost:5001/.well-known/openid-configuration/jwks",
+    "authorization_endpoint": "https://localhost:5001/connect/authorize",
+    "token_endpoint": "https://localhost:5001/connect/token",
+    "userinfo_endpoint": "https://localhost:5001/connect/userinfo",
+    "end_session_endpoint": "https://localhost:5001/connect/endsession",
+    "check_session_iframe": "https://localhost:5001/connect/checksession",
+    "revocation_endpoint": "https://localhost:5001/connect/revocation",
+    "introspection_endpoint": "https://localhost:5001/connect/introspect",
+    "device_authorization_endpoint": "https://localhost:5001/connect/deviceauthorization",
+    "backchannel_authentication_endpoint": "https://localhost:5001/connect/ciba",
+    "pushed_authorization_request_endpoint": "https://localhost:5001/connect/par",
+    "require_pushed_authorization_requests": false,
+    "frontchannel_logout_supported": true,
+    "frontchannel_logout_session_supported": true,
+    "backchannel_logout_supported": true,
+    "backchannel_logout_session_supported": true,
+    "scopes_supported": [
+        "api1",
+        "offline_access"
+    ],
+    "claims_supported": [],
+    "grant_types_supported": [
+        "authorization_code",
+        "client_credentials",
+        "refresh_token",
+        "implicit",
+        "urn:ietf:params:oauth:grant-type:device_code",
+        "urn:openid:params:grant-type:ciba"
+    ],
+    "response_types_supported": [
+        "code",
+        "token",
+        "id_token",
+        "id_token token",
+        "code id_token",
+        "code token",
+        "code id_token token"
+    ],
+    "response_modes_supported": [
+        "form_post",
+        "query",
+        "fragment"
+    ],
+    "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post"
+    ],
+    "id_token_signing_alg_values_supported": [
+        "RS256"
+    ],
+    "subject_types_supported": [
+        "public"
+    ],
+    "code_challenge_methods_supported": [
+        "plain",
+        "S256"
+    ],
+    "request_parameter_supported": true,
+    "request_object_signing_alg_values_supported": [
+        "RS256",
+        "RS384",
+        "RS512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "ES256",
+        "ES384",
+        "ES512",
+        "HS256",
+        "HS384",
+        "HS512"
+    ],
+    "prompt_values_supported": [
+        "none",
+        "login",
+        "consent",
+        "select_account"
+    ],
+    "authorization_response_iss_parameter_supported": true,
+    "backchannel_token_delivery_modes_supported": [
+        "poll"
+    ],
+    "backchannel_user_code_parameter_supported": true,
+    "dpop_signing_alg_values_supported": [
+        "RS256",
+        "RS384",
+        "RS512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "ES256",
+        "ES384",
+        "ES512"
+    ]
+}
+```
 
 ```C#
 //-----------------------------------------------------------V
@@ -1755,63 +1854,24 @@ internal class Decorator<TService, TImpl> : Decorator<TService> where TImpl : cl
 }
 ```
 
-```json 
-// i2, result from calling https://localhost:5005/.well-known/openid-configuration
+
+
+
+## IdentityModel Source Code
+
+```C#
+//------------------------V
+public class TokenResponse : ProtocolResponse
 {
-  "issuer": "https://localhost:5005",
-  "jwks_uri": "https://localhost:5005/.well-known/openid-configuration/jwks",
-  "authorization_endpoint": "https://localhost:5005/connect/authorize",
-  "token_endpoint": "https://localhost:5005/connect/token",
-  "userinfo_endpoint": "https://localhost:5005/connect/userinfo",
-  "end_session_endpoint": "https://localhost:5005/connect/endsession",
-  "check_session_iframe": "https://localhost:5005/connect/checksession",
-  "revocation_endpoint": "https://localhost:5005/connect/revocation",
-  "introspection_endpoint": "https://localhost:5005/connect/introspect",
-  "device_authorization_endpoint": "https://localhost:5005/connect/deviceauthorization",
-  "frontchannel_logout_supported": true,
-  "frontchannel_logout_session_supported": true,
-  "backchannel_logout_supported": true,
-  "backchannel_logout_session_supported": true,
-  "scopes_supported": [
-    "movieAPI",
-    "offline_access"
-  ],
-  "claims_supported": [],
-  "grant_types_supported": [
-    "authorization_code",
-    "client_credentials",
-    "refresh_token",
-    "implicit",
-    "urn:ietf:params:oauth:grant-type:device_code"
-  ],
-  "response_types_supported": [
-    "code",
-    "token",
-    "id_token",
-    "id_token token",
-    "code id_token",
-    "code token",
-    "code id_token token"
-  ],
-  "response_modes_supported": [
-    "form_post",
-    "query",
-    "fragment"
-  ],
-  "token_endpoint_auth_methods_supported": [
-    "client_secret_basic",
-    "client_secret_post"
-  ],
-  "id_token_signing_alg_values_supported": [
-    "RS256"
-  ],
-  "subject_types_supported": [
-    "public"
-  ],
-  "code_challenge_methods_supported": [
-    "plain",
-    "S256"
-  ],
-  "request_parameter_supported": true
+    public string? AccessToken => TryGet(OidcConstants.TokenResponse.AccessToken);
+    public string? IdentityToken => TryGet(OidcConstants.TokenResponse.IdentityToken);
+    public string? Scope => TryGet(OidcConstants.TokenResponse.Scope);
+    public string? IssuedTokenType => TryGet(OidcConstants.TokenResponse.IssuedTokenType);
+    public string? TokenType => TryGet(OidcConstants.TokenResponse.TokenType);
+    public string? RefreshToken => TryGet(OidcConstants.TokenResponse.RefreshToken);
+    public string? ErrorDescription => TryGet(OidcConstants.TokenResponse.ErrorDescription);
+    public int ExpiresIn => TryGet(OidcConstants.TokenResponse.ExpiresIn);
 }
+//------------------------Ʌ
+
 ```

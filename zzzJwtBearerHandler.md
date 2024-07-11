@@ -1537,3 +1537,294 @@ public class JwtBearerPostConfigureOptions : IPostConfigureOptions<JwtBearerOpti
 //----------------------------------------Ʌ
 ```
 
+```C#
+//----------------------------------V
+public abstract class TokenHandler
+{
+    private int _defaultTokenLifetimeInMinutes = DefaultTokenLifetimeInMinutes;
+    private int _maximumTokenSizeInBytes = 256000;
+    public static readonly int DefaultTokenLifetimeInMinutes = 60;
+    public virtual int MaximumTokenSizeInBytes => _=> { get; set; };  //maximumTokenSizeInBytes;
+    public bool SetDefaultTimesOnTokenCreation { get; set; } = true;
+    public int TokenLifetimeInMinutes => { get; set; }  // on _defaultTokenLifetimeInMinutes
+}
+
+public interface ISecurityTokenValidator
+{
+    bool CanValidateToken { get; }
+    int MaximumTokenSizeInBytes { get; set; }
+    bool CanReadToken(string securityToken);
+    ClaimsPrincipal ValidateToken(string securityToken, TokenValidationParameters validationParameters, out SecurityToken validatedToken);
+}
+//----------------------------------Ʌ
+
+//----------------------------------V
+public class JwtSecurityTokenHandler : SecurityTokenHandler
+{
+    // ...
+    public override bool CanReadToken(string token);
+}
+//----------------------------------Ʌ
+
+//-------------------------------------->>
+public interface IConfigurationManager<T> where T : class
+{
+    Task<T> GetConfigurationAsync(CancellationToken cancel);    
+    void RequestRefresh();
+}
+//--------------------------------------<<
+
+
+//--------------------------------------------V
+public abstract class BaseConfigurationManager
+{
+    private TimeSpan _automaticRefreshInterval = DefaultAutomaticRefreshInterval;
+    private TimeSpan _refreshInterval = DefaultRefreshInterval;
+    private TimeSpan _lastKnownGoodLifetime = DefaultLastKnownGoodConfigurationLifetime;
+    private BaseConfiguration _lastKnownGoodConfiguration;
+    private DateTime? _lastKnownGoodConfigFirstUse = null;
+
+    internal EventBasedLRUCache<BaseConfiguration, DateTime> _lastKnownGoodConfigurationCache;
+
+    /// <summary>
+    /// Gets or sets the <see cref="TimeSpan"/> that controls how often an automatic metadata refresh should occur.
+    /// </summary>
+    public TimeSpan AutomaticRefreshInterval
+    {
+        get { return _automaticRefreshInterval; }
+        set
+        {
+            if (value < MinimumAutomaticRefreshInterval)
+                throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(value), LogHelper.FormatInvariant(LogMessages.IDX10108, LogHelper.MarkAsNonPII(MinimumAutomaticRefreshInterval), LogHelper.MarkAsNonPII(value))));
+
+            _automaticRefreshInterval = value;
+        }
+    }
+
+    public static readonly TimeSpan DefaultAutomaticRefreshInterval = new TimeSpan(0, 12, 0, 0);
+
+    public static readonly TimeSpan DefaultLastKnownGoodConfigurationLifetime = new TimeSpan(0, 1, 0, 0);
+
+    public static readonly TimeSpan DefaultRefreshInterval = new TimeSpan(0, 0, 5, 0);
+
+    public BaseConfigurationManager()
+        : this(new LKGConfigurationCacheOptions())
+    {
+    }
+
+    public BaseConfigurationManager(LKGConfigurationCacheOptions options)
+    {
+        if (options == null)
+            throw LogHelper.LogArgumentNullException(nameof(options));
+
+        _lastKnownGoodConfigurationCache = new EventBasedLRUCache<BaseConfiguration, DateTime>(
+            options.LastKnownGoodConfigurationSizeLimit,
+            options.TaskCreationOptions,
+            options.BaseConfigurationComparer,
+            options.RemoveExpiredValues);
+    }
+
+    public virtual Task<BaseConfiguration> GetBaseConfigurationAsync(CancellationToken cancel)
+    {
+        throw  new NotImplementedException(...);
+    }
+
+    internal BaseConfiguration[] GetValidLkgConfigurations()
+    {
+        return _lastKnownGoodConfigurationCache.ToArray().Where(x => x.Value.Value > DateTime.UtcNow).Select(x => x.Key).ToArray();
+    }
+
+    public BaseConfiguration LastKnownGoodConfiguration
+    {
+        get {
+            return _lastKnownGoodConfiguration;
+        }
+        set
+        {
+            _lastKnownGoodConfiguration = value ?? throw LogHelper.LogArgumentNullException(nameof(value));
+            _lastKnownGoodConfigFirstUse = DateTime.UtcNow;
+
+            // LRU cache will remove the expired configuration
+            _lastKnownGoodConfigurationCache.SetValue(_lastKnownGoodConfiguration, DateTime.UtcNow + LastKnownGoodLifetime, DateTime.UtcNow + LastKnownGoodLifetime);
+        }
+    }
+
+    public TimeSpan LastKnownGoodLifetime => { get; set; };  // on _lastKnownGoodLifetime
+   
+    public string MetadataAddress { get; set; }
+
+    public static readonly TimeSpan MinimumAutomaticRefreshInterval = new TimeSpan(0, 0, 5, 0);
+
+    public static readonly TimeSpan MinimumRefreshInterval = new TimeSpan(0, 0, 0, 1);
+
+    public TimeSpan RefreshInterval => { get; set; };  // on _refreshInterval
+    
+    public bool UseLastKnownGoodConfiguration { get; set; } = true;
+
+    public bool IsLastKnownGoodValid => _lastKnownGoodConfiguration != null && (_lastKnownGoodConfigFirstUse == null || DateTime.UtcNow < _lastKnownGoodConfigFirstUse + LastKnownGoodLifetime);
+
+    public abstract void RequestRefresh();
+}
+//--------------------------------------------Ʌ
+
+//----------------------------------V
+public class ConfigurationManager<T> : BaseConfigurationManager, IConfigurationManager<T> where T : class
+{
+    private DateTimeOffset _syncAfter = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastRefresh = DateTimeOffset.MinValue;
+    private bool _isFirstRefreshRequest = true;
+
+    private readonly SemaphoreSlim _refreshLock;
+    private readonly IDocumentRetriever _docRetriever;
+    private readonly IConfigurationRetriever<T> _configRetriever;
+    private readonly IConfigurationValidator<T> _configValidator;
+    private T _currentConfiguration;
+    private Exception _fetchMetadataFailure;
+    private TimeSpan _bootstrapRefreshInterval = TimeSpan.FromSeconds(1);
+ 
+    public ConfigurationManager(string metadataAddress, IConfigurationRetriever<T> configRetriever, IDocumentRetriever docRetriever, LastKnownGoodConfigurationCacheOptions lkgCacheOptions)
+        : base(lkgCacheOptions)
+    {
+        if (string.IsNullOrWhiteSpace(metadataAddress))
+            throw LogHelper.LogArgumentNullException(nameof(metadataAddress));
+
+        if (configRetriever == null)
+            throw LogHelper.LogArgumentNullException(nameof(configRetriever));
+
+        if (docRetriever == null)
+            throw LogHelper.LogArgumentNullException(nameof(docRetriever));
+
+        MetadataAddress = metadataAddress;
+        _docRetriever = docRetriever;
+        _configRetriever = configRetriever;
+        _refreshLock = new SemaphoreSlim(1);
+    }
+
+    public async Task<T> GetConfigurationAsync()
+    {
+        return await GetConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    public async Task<T> GetConfigurationAsync(CancellationToken cancel)
+    {
+        if (_currentConfiguration != null && _syncAfter > DateTimeOffset.UtcNow)
+        {
+            return _currentConfiguration;
+        }
+
+        await _refreshLock.WaitAsync(cancel).ConfigureAwait(false);
+        try
+        {
+            if (_syncAfter <= DateTimeOffset.UtcNow)
+            {
+                try
+                {
+                    var configuration = await _configRetriever.GetConfigurationAsync(MetadataAddress, _docRetriever, CancellationToken.None).ConfigureAwait(false);
+                    if (_configValidator != null)
+                    {
+                        ConfigurationValidationResult result = _configValidator.Validate(configuration);
+                        if (!result.Succeeded)
+                            throw LogHelper.LogExceptionMessage(new InvalidConfigurationException(LogHelper.FormatInvariant(LogMessages.IDX20810, result.ErrorMessage)));
+                    }
+
+                    _lastRefresh = DateTimeOffset.UtcNow;
+                    // Add a random amount between 0 and 5% of AutomaticRefreshInterval jitter to avoid spike traffic to IdentityProvider.
+                    _syncAfter = DateTimeUtil.Add(DateTime.UtcNow, AutomaticRefreshInterval + TimeSpan.FromSeconds(new Random().Next((int)AutomaticRefreshInterval.TotalSeconds / 20)));
+                    _currentConfiguration = configuration;
+                }
+                catch (Exception ex)
+                {
+                   // ...
+                }
+            }
+
+            // Stale metadata is better than no metadata
+            if (_currentConfiguration != null)
+                return _currentConfiguration;
+            else
+                throw ...
+        }
+        finally
+        {
+            _refreshLock.Release();
+        }
+    }
+
+    public override async Task<BaseConfiguration> GetBaseConfigurationAsync(CancellationToken cancel)
+    {
+        var obj = await GetConfigurationAsync(cancel).ConfigureAwait(false);
+        if (obj is BaseConfiguration)
+            return obj as BaseConfiguration;
+        return null;
+    }
+
+    public override void RequestRefresh()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (_isFirstRefreshRequest)
+        {
+            _syncAfter = now;
+            _isFirstRefreshRequest = false;
+        }
+        else if (now >= DateTimeUtil.Add(_lastRefresh.UtcDateTime, RefreshInterval))
+        {
+            _syncAfter = now;
+        }
+    }
+
+    public new static readonly TimeSpan DefaultAutomaticRefreshInterval = BaseConfigurationManager.DefaultAutomaticRefreshInterval;
+    public new static readonly TimeSpan DefaultRefreshInterval = BaseConfigurationManager.DefaultRefreshInterval;
+    public new static readonly TimeSpan MinimumAutomaticRefreshInterval = BaseConfigurationManager.MinimumAutomaticRefreshInterval;
+    public new static readonly TimeSpan MinimumRefreshInterval = BaseConfigurationManager.MinimumRefreshInterval;
+}
+//----------------------------------Ʌ
+
+//--------------------------------V
+public class HttpDocumentRetriever : IDocumentRetriever
+{
+    private HttpClient _httpClient;
+    private static readonly HttpClient _defaultHttpClient = new HttpClient();
+
+    public const string StatusCode = "status_code";
+    public const string ResponseContent = "response_content";
+    public static bool DefaultSendAdditionalHeaderData { get; set; } = true;
+
+    private bool _sendAdditionalHeaderData = DefaultSendAdditionalHeaderData;
+
+    public bool SendAdditionalHeaderData { get; set; } = true;  // on _sendAdditionalHeaderData
+    
+    internal IDictionary<string, string> AdditionalHeaderData { get; set; }
+
+    public HttpDocumentRetriever() { }
+
+    public HttpDocumentRetriever(HttpClient httpClient)
+    {
+        _httpClient = httpClient;
+    }
+
+    public bool RequireHttps { get; set; } = true;
+
+    public async Task<string> GetDocumentAsync(string address, CancellationToken cancel)
+    {       
+        // ...
+        try
+        {
+            if (LogHelper.IsEnabled(EventLogLevel.Verbose))
+                LogHelper.LogVerbose(LogMessages.IDX20805, address);
+
+            var httpClient = _httpClient ?? _defaultHttpClient;
+            var uri = new Uri(address, UriKind.RelativeOrAbsolute);
+            response = await SendAndRetryOnNetworkErrorAsync(httpClient, uri).ConfigureAwait(false);
+
+            var responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+                return responseContent;      
+        } 
+        // ...
+    }
+
+    private async Task<HttpResponseMessage> SendAndRetryOnNetworkErrorAsync(HttpClient httpClient, Uri uri);
+}
+//--------------------------------Ʌ
+```
+
