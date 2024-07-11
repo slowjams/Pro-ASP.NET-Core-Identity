@@ -1558,11 +1558,75 @@ public interface ISecurityTokenValidator
 }
 //----------------------------------Ʌ
 
+//----------------------------------------V
+public abstract class SecurityTokenHandler : TokenHandler, ISecurityTokenValidator
+{
+    protected SecurityTokenHandler() { }
+
+    public virtual SecurityKeyIdentifierClause CreateSecurityTokenReference(SecurityToken token, bool attached) => throw new NotImplementedException();
+    
+    public virtual SecurityToken CreateToken(SecurityTokenDescriptor tokenDescriptor) => throw new NotImplementedException();
+    
+    public virtual bool CanValidateToken => false;
+    public virtual bool CanWriteToken => false;
+    public abstract Type TokenType { get; }
+
+    public virtual bool CanReadToken(XmlReader reader) => false;
+    public virtual bool CanReadToken(string tokenString) => false; 
+    public virtual SecurityToken ReadToken(XmlReader reader) => null;
+    public virtual string WriteToken(SecurityToken token)  => null;
+
+    public abstract void WriteToken(XmlWriter writer, SecurityToken token);
+    public abstract SecurityToken ReadToken(XmlReader reader, TokenValidationParameters validationParameters);
+
+    public virtual ClaimsPrincipal ValidateToken(string securityToken, TokenValidationParameters validationParameters, out SecurityToken validatedToken)
+        => throw new NotImplementedException();
+
+    public virtual ClaimsPrincipal ValidateToken(XmlReader reader, TokenValidationParameters validationParameters, out SecurityToken validatedToken)
+        => throw new NotImplementedException();
+}
+//----------------------------------------Ʌ
+
 //----------------------------------V
 public class JwtSecurityTokenHandler : SecurityTokenHandler
 {
     // ...
     public override bool CanReadToken(string token);
+    public override bool CanValidateToken => true;
+    public override bool CanWriteToken => true;
+
+    public override Task<TokenValidationResult> ValidateTokenAsync(string token, TokenValidationParameters validationParameters)
+    {
+        var claimsPrincipal = ValidateToken(token, validationParameters, out var validatedToken);
+        
+        return Task.FromResult(new TokenValidationResult
+        {
+            SecurityToken = validatedToken,
+            ClaimsIdentity = claimsPrincipal?.Identity as ClaimsIdentity,
+            IsValid = true,
+        });
+    }
+
+    public override ClaimsPrincipal ValidateToken(string token, TokenValidationParameters validationParameters, out SecurityToken validatedToken)
+    {
+        int tokenPartCount = JwtTokenUtilities.CountJwtTokenPart(token, JwtConstants.MaxJwtSegmentCount + 1);
+
+        if (tokenPartCount == JwtConstants.JweSegmentCount)
+        {
+            var jwtToken = ReadJwtToken(token);
+            var decryptedJwt = DecryptToken(jwtToken, validationParameters);
+            return ValidateToken(decryptedJwt, jwtToken, validationParameters, out validatedToken);
+        }
+        else
+        {
+            return ValidateToken(token, null, validationParameters, out validatedToken);
+        }
+    }
+
+    private ClaimsPrincipal ValidateToken(string token, JwtSecurityToken outerToken, TokenValidationParameters validationParameters, out SecurityToken signatureValidatedToken)
+    {
+        // return the claimsPrincipal by using private methods such as ValidateJWE, ValidateJWS                             
+    }
 }
 //----------------------------------Ʌ
 
@@ -1685,15 +1749,6 @@ public class ConfigurationManager<T> : BaseConfigurationManager, IConfigurationM
     public ConfigurationManager(string metadataAddress, IConfigurationRetriever<T> configRetriever, IDocumentRetriever docRetriever, LastKnownGoodConfigurationCacheOptions lkgCacheOptions)
         : base(lkgCacheOptions)
     {
-        if (string.IsNullOrWhiteSpace(metadataAddress))
-            throw LogHelper.LogArgumentNullException(nameof(metadataAddress));
-
-        if (configRetriever == null)
-            throw LogHelper.LogArgumentNullException(nameof(configRetriever));
-
-        if (docRetriever == null)
-            throw LogHelper.LogArgumentNullException(nameof(docRetriever));
-
         MetadataAddress = metadataAddress;
         _docRetriever = docRetriever;
         _configRetriever = configRetriever;
@@ -1742,7 +1797,7 @@ public class ConfigurationManager<T> : BaseConfigurationManager, IConfigurationM
             if (_currentConfiguration != null)
                 return _currentConfiguration;
             else
-                throw ...
+               throw ...;
         }
         finally
         {
@@ -1826,5 +1881,44 @@ public class HttpDocumentRetriever : IDocumentRetriever
     private async Task<HttpResponseMessage> SendAndRetryOnNetworkErrorAsync(HttpClient httpClient, Uri uri);
 }
 //--------------------------------Ʌ
+
+//----------------------------------------------V
+public class OpenIdConnectConfigurationRetriever : IConfigurationRetriever<OpenIdConnectConfiguration>
+{
+    public static Task<OpenIdConnectConfiguration> GetAsync(string address, CancellationToken cancel)
+    {
+        return GetAsync(address, new HttpDocumentRetriever(), cancel);
+    }
+
+    public static Task<OpenIdConnectConfiguration> GetAsync(string address, HttpClient httpClient, CancellationToken cancel)
+    {
+        return GetAsync(address, new HttpDocumentRetriever(httpClient), cancel);
+    }
+
+    Task<OpenIdConnectConfiguration> IConfigurationRetriever<OpenIdConnectConfiguration>.GetConfigurationAsync(string address, IDocumentRetriever retriever, CancellationToken cancel)
+    {
+        return GetAsync(address, retriever, cancel);
+    }
+
+    public static async Task<OpenIdConnectConfiguration> GetAsync(string address, IDocumentRetriever retriever, CancellationToken cancel)
+    {
+        string doc = await retriever.GetDocumentAsync(address, cancel).ConfigureAwait(false);
+
+        OpenIdConnectConfiguration openIdConnectConfiguration = OpenIdConnectConfigurationSerializer.Read(doc);
+        if (!string.IsNullOrEmpty(openIdConnectConfiguration.JwksUri))
+        {
+            string keys = await retriever.GetDocumentAsync(openIdConnectConfiguration.JwksUri, cancel).ConfigureAwait(false);
+
+            openIdConnectConfiguration.JsonWebKeySet = new JsonWebKeySet(keys);
+            foreach (SecurityKey key in openIdConnectConfiguration.JsonWebKeySet.GetSigningKeys())
+            {
+                openIdConnectConfiguration.SigningKeys.Add(key);
+            }
+        }
+
+        return openIdConnectConfiguration;
+    }
+}
+//----------------------------------------------Ʌ
 ```
 
