@@ -170,6 +170,7 @@ public class AuthenticationMiddleware
 
       // give any IAuthenticationRequestHandler schemes a chance to handle the request
       var handlers = context.RequestServices.GetRequiredService<IAuthenticationHandlerProvider>(); // see ExternalAuthHandler.HandleRequestAsync
+
       foreach (AuthenticationScheme scheme in await Schemes.GetRequestHandlerSchemesAsync())  // GetRequestHandlerSchemesAsync returns all scheme registered by AddScheme()
       {
          var handler = await handlers.GetHandlerAsync(context, scheme.Name) as IAuthenticationRequestHandler;
@@ -1203,6 +1204,13 @@ public class AuthenticationSchemeOptions
    public TimeProvider? TimeProvider { get; set; }
 }
 //--------------------------------------Ʌ
+
+//--------------------------------------------->>
+public interface IAuthenticationHandlerProvider
+{
+    Task<IAuthenticationHandler?> GetHandlerAsync(HttpContext context, string authenticationScheme);
+}
+//---------------------------------------------<<
 ```
 
 =================================================================================================================================================================

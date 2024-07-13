@@ -378,8 +378,9 @@ public static class IdentityServerApplicationBuilderExtensions
         app.ConfigureCors();
  
            
-        if (options == null) options = new IdentityServerMiddlewareOptions();
-        options.AuthenticationMiddleware(app);
+        if (options == null) 
+            options = new IdentityServerMiddlewareOptions();
+        options.AuthenticationMiddleware(app);   // <-------------call app.UseAuthentication() so it's not necessary to have both
  
         app.UseMiddleware<MutualTlsEndpointMiddleware>();  // <---------------------------------------a0.2
         app.UseMiddleware<IdentityServerMiddleware>();     // <--------------------------------------!a0.3., q1
@@ -508,6 +509,53 @@ internal class EndpointRouter : IEndpointRouter
 }
 //---------------------------Ʌ
 
+//-----------------------------------------V
+public static class IdentityServerConstants
+{
+    public const string LocalIdentityProvider = "local";
+    public const string DefaultCookieAuthenticationScheme = "idsrv";
+    public const string SignoutScheme = "idsrv";
+    public const string ExternalCookieAuthenticationScheme = "idsrv.external";
+    public const string DefaultCheckSessionCookieName = "idsrv.session";
+    public const string AccessTokenAudience = "{0}resources";
+    public const string JwtRequestClientKey = "idsrv.jwtrequesturi.client";
+    public const string PushedAuthorizationRequestUri = "urn:ietf:params:oauth:request_uri";
+
+    public static class LocalApi
+    {
+        public const string AuthenticationScheme = "IdentityServerAccessToken";
+        public const string ScopeName = "IdentityServerApi";
+        public const string PolicyName = AuthenticationScheme;
+    }
+
+    public static class ProtocolTypes
+    {
+        public const string OpenIdConnect = "oidc";
+        public const string WsFederation = "wsfed";
+        public const string Saml2p = "saml2p";
+    }
+
+    public static class TokenTypes
+    {
+        public const string IdentityToken = "id_token";
+        public const string AccessToken = "access_token";
+        public const string LogoutToken = "logout_token";
+    }
+
+    public static class StandardScopes
+    {
+        public const string OpenId = "openid";
+        public const string Profile = "profile";
+        public const string Email = "email";
+        public const string Address = "address";
+        public const string Phone = "phone";
+        public const string OfflineAccess = "offline_access";
+    }
+
+    // ...
+}
+//-----------------------------------------Ʌ
+
 //--------------------------------V
 public class IdentityServerOptions
 {
@@ -532,6 +580,33 @@ public class IdentityServerOptions
     public MutualTlsOptions MutualTls { get; set; } = new MutualTlsOptions();
 }
 //--------------------------------Ʌ
+
+//---------------------V
+public class GrantTypes
+{
+    public static ICollection<string> Implicit => new[] { GrantType.Implicit };
+
+    public static ICollection<string> ImplicitAndClientCredentials => new[]  { GrantType.Implicit, GrantType.ClientCredentials };
+
+    public static ICollection<string> Code => new[] { GrantType.AuthorizationCode };
+
+    public static ICollection<string> CodeAndClientCredentials => new[] { GrantType.AuthorizationCode, GrantType.ClientCredentials };
+
+    public static ICollection<string> Hybrid => new[] { GrantType.Hybrid };
+
+    public static ICollection<string> HybridAndClientCredentials => new[] { GrantType.Hybrid, GrantType.ClientCredentials };
+
+    public static ICollection<string> ClientCredentials => new[] { GrantType.ClientCredentials };
+
+    public static ICollection<string> ResourceOwnerPassword => new[] { GrantType.ResourceOwnerPassword };
+
+    public static ICollection<string> ResourceOwnerPasswordAndClientCredentials => new[] { GrantType.ResourceOwnerPassword, GrantType.ClientCredentials };
+
+    public static ICollection<string> DeviceFlow => new[] { GrantType.DeviceFlow };
+
+    public static ICollection<string> Ciba => new[] { OidcConstants.GrantTypes.Ciba };
+}
+//---------------------Ʌ
 
 //---------------------------V
 public static class GrantType
@@ -592,6 +667,48 @@ public class IdentityResource : Resource
     public bool Emphasize { get; set; } = false;
 }
 //---------------------------Ʌ
+
+//-----------------------------------V
+public static class IdentityResources
+{
+    public class OpenId : IdentityResource
+    {
+        public OpenId()
+        {
+            Name = IdentityServerConstants.StandardScopes.OpenId;
+            DisplayName = "Your user identifier";
+            Required = true;
+            UserClaims.Add(JwtClaimTypes.Subject);
+        }
+    }
+
+    public class Profile : IdentityResource
+    {
+        public Profile()
+        {
+            Name = IdentityServerConstants.StandardScopes.Profile;
+            DisplayName = "User profile";
+            Description = "Your user profile information (first name, last name, etc.)";
+            Emphasize = true;
+            UserClaims = Constants.ScopeToClaimsMapping[IdentityServerConstants.StandardScopes.Profile].ToList();
+        }
+    }
+
+    public class Email : IdentityResource 
+    { 
+        public Email()
+        {
+            Name = IdentityServerConstants.StandardScopes.Email;
+            DisplayName = "Your email address";
+            Emphasize = true;
+            UserClaims = (Constants.ScopeToClaimsMapping[IdentityServerConstants.StandardScopes.Email].ToList());
+        }
+    }
+
+    public class Phone : IdentityResource { ... };
+    public class Address : IdentityResource {...  };
+}
+//-----------------------------------Ʌ
 ```
 
 ```C#

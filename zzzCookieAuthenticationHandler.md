@@ -167,7 +167,7 @@ public static class CookieExtensions
       
       builder.Services.   // <--------------------authenticationScheme will be used as "cookie name" check PostConfigureCookieAuthenticationOptions
           AddOptions<CookieAuthenticationOptions>(authenticationScheme).Validate(o => o.Cookie.Expiration == null, "Cookie.Expiration is ignored, ...");
-
+                                                   
       return builder.AddScheme<CookieAuthenticationOptions, CookieAuthenticationHandler>(authenticationScheme, displayName, configureOptions);
    }
 }
