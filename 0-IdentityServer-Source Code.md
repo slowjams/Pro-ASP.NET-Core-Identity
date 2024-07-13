@@ -1859,6 +1859,22 @@ internal class Decorator<TService, TImpl> : Decorator<TService> where TImpl : cl
 
 ## IdentityModel Source Code
 
+
+```C#
+// IdentityModel.Client
+
+public class DiscoveryPolicy
+{
+
+}
+
+public class DiscoveryDocumentResponse
+{
+
+}
+
+```
+
 ```C#
 //------------------------V
 public class TokenResponse : ProtocolResponse
