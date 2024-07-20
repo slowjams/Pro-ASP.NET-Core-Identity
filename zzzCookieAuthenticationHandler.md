@@ -440,7 +440,8 @@ public class CookieAuthenticationHandler : SignInAuthenticationHandler<CookieAut
       {
          var expiresUtc = signInContext.Properties.ExpiresUtc ?? issuedUtc.Add(Options.ExpireTimeSpan);
          signInContext.CookieOptions.Expires = expiresUtc.ToUniversalTime();
- 
+      }
+
       var ticket = new AuthenticationTicket(signInContext.Principal!, 
                                             signInContext.Properties,  // AuthenticationProperties htat contains .redirect, .issued .expires etc are baked into ticket
                                             signInContext.Scheme.Name);
@@ -487,8 +488,8 @@ public class CookieAuthenticationHandler : SignInAuthenticationHandler<CookieAut
       await ApplyHeaders(shouldRedirect: true, shouldHonorReturnUrlParameter, signedInContext.Properties);
  
       Logger.AuthenticationSchemeSignedIn(Scheme.Name);
-   }
-
+   }   
+   
    protected override async Task HandleSignOutAsync(AuthenticationProperties? properties)
    {
       properties = properties ?? new AuthenticationProperties();

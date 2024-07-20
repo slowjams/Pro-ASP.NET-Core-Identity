@@ -170,19 +170,17 @@ public class AuthenticationMiddleware
 
       // give any IAuthenticationRequestHandler schemes a chance to handle the request
       var handlers = context.RequestServices.GetRequiredService<IAuthenticationHandlerProvider>(); // see ExternalAuthHandler.HandleRequestAsync
-
       foreach (AuthenticationScheme scheme in await Schemes.GetRequestHandlerSchemesAsync())  // GetRequestHandlerSchemesAsync returns all scheme registered by AddScheme()
       {
          var handler = await handlers.GetHandlerAsync(context, scheme.Name) as IAuthenticationRequestHandler;
-         
-         if (handler != null && await handler.HandleRequestAsync())  // <---------------------for external auth service, check ExternalAuthHandler example in chapter23
+            
+         if (handler != null && await handler.HandleRequestAsync())  // <------------------e1, for external auth service, check ExternalAuthHandler example in chapter23
          {
             return;   // <----------------------note we want to return here and bypass all the following middlewares such as AuthorizationMiddleware 
          }            // as HandleRequestAsync() normally does a redirection call such as Context.Response.Redirect(props.RedirectUri), check ExternalAuthHandler for more info
-                      
       }
+      //
  
-
       // <--------------------------------------------this is extremely important, AuthenticationMiddleware only runs default scheme authentication
       AuthenticationScheme defaultAuthenticate = await Schemes.GetDefaultAuthenticateSchemeAsync();  // use AuthenticationOptions.DefaultAuthenticateScheme if it exsits
                                                                                                      // if not then AuthenticationOptions.DefaultScheme

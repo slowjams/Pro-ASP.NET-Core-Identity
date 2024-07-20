@@ -2045,7 +2045,7 @@ public class ExternalSignInModel : PageModel  // when user click "SignIn Externa
     // this is the handler when user click the button for external sign in such as "SignIn by Google"
     public IActionResult OnPost(string providerName, string returnUrl = "/")  // <-----------------------------e1 providerName is demoAuth
     {
-        // redirectUrl is "/ExternalSignIn?returnUrl=%2F&handler=Correlate"
+        // redirectUrl is "/ExternalSignIn?returnUrl=%2F&handler=Correlate" and the inner returnUrl can be "secret" endpoint
         string redirectUrl = Url.Page("./ExternalSignIn", pageHandler: "Correlate", values: new { returnUrl });
 
         AuthenticationProperties properties = SignInManager.ConfigureExternalAuthenticationProperties(providerName, redirectUrl);  // <-----------------e1.1
@@ -2169,7 +2169,7 @@ public class ExternalAuthHandler : IAuthenticationRequestHandler  // <----------
                                                                            //  "secret" route inside as a segment of AuthenticationProperties.RedirectUri  
                                                                                                                                
         Context.Response.Redirect(await GetAuthenticationUrl(properties));  // <--------------------------------ee1.3.
-        /* redirect to      
+        /* redirect user to      
         DemoExternalAuth/authenticate?client_id=MyClientID&redirect_uri=localhost:5000/signin-external&scope=openid%20email%20profile&response_type=code&state=xxx
         AuthenticationProperties properties contains return url which is "/ExternalSignIn?returnUrl=secret%2F&handler=Correlate" which is encrypted
 
@@ -2185,20 +2185,26 @@ public class ExternalAuthHandler : IAuthenticationRequestHandler  // <----------
     {
         Dictionary<string, string> qs = new Dictionary<string, string>();
 
-        qs.Add("client_id", Options.ClientId);
-        qs.Add("redirect_uri", Options.RedirectRoot + Options.RedirectPath);  // RedirectPath is "signin-external"
+        qs.Add("client_id", Options.ClientId);  // <-------------------only client id is needed to get auth code, client secret is only needed to get access token
+        
+        // RedirectRoot is "http://localhost:5000"  RedirectPath is "signin-external", redirect_uri is for HandleRequestAsync() below to intercept
+        qs.Add("redirect_uri", Options.RedirectRoot + Options.RedirectPath); 
+        // the redirect_uri in the Authorization Request is optional. It's only necessary if the client hasn't previously registered a redirection endpoint, 
+        // or if they've registered multiple redirection endpoints. Both cases are valid
+
         qs.Add("scope", Options.Scope);
         qs.Add("response_type", "code");
         qs.Add("state", PropertiesFormatter.Protect(properties));
 
-        return Task.FromResult(Options.AuthenticationUrl + QueryString.Create(qs));
+        return Task.FromResult(Options.AuthenticationUrl + QueryString.Create(qs));   // AuthenticationUrl is http://localhost:5000/DemoExternalAuth/authenticate
     }
 
+    // http://localhost:5000/signin-google?state=xxx&code=yyy&scope=email+profile+zzz&authuser=0&prompt=none 
     // http://localhost:5000/signin-google will be registered on Googe OAuth config as "Authorized redirect URL",
-    // looks like "signin-google" segment can be anything as long as you intercept the same one in the app
-    public virtual async Task<bool> HandleRequestAsync()  // <----------------ee4.0 intercept the "xxx/signin-external" request which is initialized by Google as below
-    {                                                     // http://localhost:5000/signin-google?state=xxx&code=yyy&scope=email+profile+zzz&authuser=0&prompt=none
-        if (Context.Request.Path.Equals(Options.RedirectPath)) // when RedirectPath is "signin-external", note it only compare path, doesn't include query string
+    //  looks like "signin-google" segment can be anything as long as you intercept the same one in the app
+    public virtual async Task<bool> HandleRequestAsync()  // <----------------ee4.0 intercept the "xxx/signin-external" redirection request which is initialized by Authorization Server
+    {                                                     // (e.g Google), note that it is user who will do the redirection, see e1
+        if (Context.Request.Path.Equals(Options.RedirectPath)) // RedirectPath is "signin-external", note it only compare path, doesn't include query string
         {
             string authCode = Context.Request.Query["code"].ToString();  // authCode is sent by externl service
             (string token, string state) = await GetAccessToken(authCode);  // <-----------ee4.1 exchanging the Authorization Code for an Access Token
@@ -2306,8 +2312,8 @@ public class ExternalAuthHandler : IAuthenticationRequestHandler  // <----------
 //------------------------------Ʌ
 
 //-------------------------------------V
-public class DemoExternalAuthController : Controller  // demonstrate external authentication, you can consider it as Google Auth Service
-{
+public class DemoExternalAuthController : Controller  // runs on http://localhost:5000 (supporse to run in different domain) with the web app that runs ExternalAuthHandler 
+{                                                     // you can consider it as Google Auth Service
     private static string expectedID = "MyClientID";
     private static string expectedSecret = "MyClientSecret";
     private static List<UserRecord> users = new List<UserRecord> {  // simulate gmail account
@@ -2345,10 +2351,14 @@ public class DemoExternalAuthController : Controller  // demonstrate external au
 
             if (user != null)
             {
-                // localhost:5000/signin-external?code=12345&scope=openid email profile&state=xxx_
+                // redirect_uri is localhost:5000/signin-external?code=12345&scope=openid email profile&state=xxx_  
+                // note that localhost:5000 is our web app, but it is user's browser (any host) will do this redirection
+                // and after the redirection from user, our web app's ExternalAuthHandler.HandleRequestAsync() intercept this request
                 //For Google, redirect_uri needs to be pre registered when configuring Google's OAuth
                 // we just pass the return url from the view for simplicity as we don't want to maintain different client in this controller and lookup registered url
-                return  Redirect(info.redirect_uri + $"?code={user.Code}&scope={info.scope}" + $"&state={info.state}");  //<------------------------------------------ee3.1.
+                return  // note this direction is sent from Authorization Server (e.g) to client (not web application) directly
+                    Redirect(info.redirect_uri + $"?code={user.Code}&scope={info.scope}" + $"&state={info.state}");  //<------------------------------------------ee3.1.
+                                                                                                                         
                 /* why OAuth need an extra that use both authCode and access token, why not just use access token
                 because OAuth like Google need to redirect user to an URL that will be intercepted by application's server(IAuthenticationRequestHandler.HandleRequestAsync())
                 this make the user's browser invloved with explict access token displayed in browser history that can be intercepted by attacker.

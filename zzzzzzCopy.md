@@ -271,7 +271,7 @@ public static class OpenIdConnectExtensions
 ```
 
 ```C#
-//-------------------------------V OpenIdConnectHandler is like ExternalAuthHandler
+//-------------------------------V
 public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOptions>, IAuthenticationSignOutHandler, IAuthenticationHandler
 {
     private const string NonceProperty = "N";
@@ -869,7 +869,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 SaveTokens(properties, openIdConnectMessage ?? authorizationResponse);
             }
 
-            if (base.Options.GetClaimsFromUserInfoEndpoint)  // <----------------------------
+            if (base.Options.GetClaimsFromUserInfoEndpoint)
             {
                 return await GetUserInformationAsync(openIdConnectMessage ?? authorizationResponse, jwt, user, properties);
             }

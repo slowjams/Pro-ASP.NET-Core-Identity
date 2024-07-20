@@ -3,22 +3,33 @@ IdentityServer4 Source Code
 
 ```C#
 //------------------V
-public class Startup
+public class Program 
 {
-    public void ConfigureServices(IServiceCollection services)
+    public static void Main(string[] args)
     {
-        services.AddIdentityServer();  // <-------------------------
-    }
+        var builder = WebApplication.CreateBuilder(args);
 
-    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
-    {
+        builder.Services.AddRazorPages();
+
+        builder.Services
+            .AddIdentityServer()
+            .AddInMemoryIdentityResources(Config.IdentityResources)
+            .AddInMemoryApiScopes(Config.ApiScopes)
+            .AddInMemoryClients(Config.Clients)
+            .AddTestUsers(TestUsers.Users);
+
+        var app = builder.Build();
+
         // ...
-
         app.UseRouting();
 
-        app.UseIdentityServer();  // <-------------------------a0
+        app.UseIdentityServer();   // <-------------------------a0
 
-        app.UseEndpoints(...);
+        app.UseAuthorization();
+
+        app.MapRazorPages().RequireAuthorization();
+
+        app.Run();
     }
 }
 //------------------Ʌ
@@ -378,7 +389,7 @@ public static class IdentityServerApplicationBuilderExtensions
         app.ConfigureCors();
  
            
-        if (options == null) 
+        if (options == null) 1
             options = new IdentityServerMiddlewareOptions();
         options.AuthenticationMiddleware(app);   // <-------------call app.UseAuthentication() so it's not necessary to have both
  
@@ -391,6 +402,22 @@ public static class IdentityServerApplicationBuilderExtensions
     // ...
 }
 //------------------------------------------------------------Ʌ
+
+//-------------------------------------------------V
+public static class IdentityServerBuilderExtensions
+{
+    public static IIdentityServerBuilder AddTestUsers(this IIdentityServerBuilder builder, List<TestUser> users)
+    {
+        builder.Services.AddSingleton(new TestUserStore(users));
+        builder.AddProfileService<TestUserProfileService>();
+        builder.AddResourceOwnerValidator<TestUserResourceOwnerPasswordValidator>();
+            
+        builder.AddBackchannelAuthenticationUserValidator<TestBackchannelLoginUserValidator>();
+
+        return builder;
+    }
+}
+//-------------------------------------------------Ʌ
 
 //-----------------------------------V
 public class IdentityServerMiddleware
@@ -1865,6 +1892,57 @@ internal class TokenEndpoint : IEndpointHandler
     }
 }
 //--------------------------Ʌ
+```
+
+```C#
+//------------------------------>>
+public interface IProfileService
+{
+    Task GetProfileDataAsync(ProfileDataRequestContext context);
+    Task IsActiveAsync(IsActiveContext context);
+}
+//------------------------------<<
+
+//---------------------------------V
+public class TestUserProfileService : IProfileService
+{
+    protected readonly ILogger Logger;
+        
+    protected readonly TestUserStore Users;
+
+    public TestUserProfileService(TestUserStore users, ILogger<TestUserProfileService> logger)
+    {
+        Users = users;
+        Logger = logger;
+    }
+
+    public virtual Task GetProfileDataAsync(ProfileDataRequestContext context)
+    {
+        context.LogProfileRequest(Logger);
+
+        if (context.RequestedClaimTypes.Any())
+        {
+            var user = Users.FindBySubjectId(context.Subject.GetSubjectId());
+            if (user != null)
+            {
+                context.AddRequestedClaims(user.Claims);
+            }
+        }
+
+        context.LogIssuedClaims(Logger);
+
+        return Task.CompletedTask;
+    }
+
+    public virtual Task IsActiveAsync(IsActiveContext context)
+    {
+        var user = Users.FindBySubjectId(context.Subject.GetSubjectId());
+        context.IsActive = user?.IsActive == true;
+
+        return Task.CompletedTask;
+    }
+}
+//---------------------------------Ʌ
 ```
 
 
