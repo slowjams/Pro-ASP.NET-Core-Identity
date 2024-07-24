@@ -551,7 +551,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         base.Logger.HandleChallenge(stringValues, stringValues2);
     }
 
-    private async Task HandleChallengeAsyncInternal(AuthenticationProperties properties)
+    private async Task HandleChallengeAsyncInternal(AuthenticationProperties properties)   // <-------------------------------a0
     {
         base.Logger.EnteringOpenIdAuthenticationHandlerHandleUnauthorizedAsync(GetType().FullName);
         if (string.IsNullOrEmpty(properties.RedirectUri))
@@ -562,7 +562,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         base.Logger.PostAuthenticationLocalRedirect(properties.RedirectUri);
         if (_configuration == null && base.Options.ConfigurationManager != null)
         {
-            _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);
+            _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);   // <-------------------------------a1
         }
 
         OpenIdConnectMessage openIdConnectMessage = new OpenIdConnectMessage
@@ -631,13 +631,19 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
 
         if (base.Options.AuthenticationMethod == OpenIdConnectRedirectBehavior.RedirectGet)
         {
-            string text2 = openIdConnectMessage.CreateAuthenticationRequestUrl();
+            string redirectUri = openIdConnectMessage.CreateAuthenticationRequestUrl();   // <------------------------------------------a2
+            /* redirectUri is e.g
+
+              https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=gxNP3gQQtCv6ybY-1SzRhuJ2lAJcw4xfY63-N0VMp_M&code_challenge_method=S256&response_mode=form_post&nonce=638574178447973386.ZjQ1NjXXXXXXX&state=XXXXoA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0
+
+            */
+            
             if (!Uri.IsWellFormedUriString(text2, UriKind.Absolute))
             {
-                base.Logger.InvalidAuthenticationRequestUrl(text2);
+                base.Logger.InvalidAuthenticationRequestUrl(redirectUri);
             }
 
-            base.Response.Redirect(text2);
+            base.Response.Redirect(redirectUri);   // <------------------------------------------a2
             return;
         }
 
@@ -1573,4 +1579,67 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
 //---------------------------------------------------------Ʌ
 ```
 
+```C#
+//-------------------------------------------V
+public static class OpenIdConnectResponseType
+{
+    public const string Code = "code";
+    public const string CodeIdToken = "code id_token";
+    public const string CodeIdTokenToken = "code id_token token";
+    public const string CodeToken = "code token";
+    public const string IdToken = "id_token";
+    public const string IdTokenToken = "id_token token";
+    public const string None = "none";
+    public const string Token = "token";
+}
+//-------------------------------------------Ʌ
+
+//---------------------------------------------V
+public static class OpenIdConnectParameterNames
+{
+    public const string AccessToken = "access_token";
+    public const string AcrValues = "acr_values";
+    public const string ClaimsLocales = "claims_locales";
+    public const string ClientAssertion = "client_assertion";
+    public const string ClientAssertionType = "client_assertion_type";
+    public const string ClientId = "client_id";
+    public const string ClientSecret = "client_secret";
+    public const string Code = "code";
+    public const string Display = "display";
+    public const string DomainHint = "domain_hint";
+    public const string Error = "error";
+    public const string ErrorDescription = "error_description";
+    public const string ErrorUri = "error_uri";
+    public const string ExpiresIn = "expires_in";
+    public const string GrantType = "grant_type";
+    public const string Iss = "iss";
+    public const string IdToken = "id_token";
+    public const string IdTokenHint = "id_token_hint";
+    public const string IdentityProvider = "identity_provider";
+    public const string LoginHint = "login_hint";
+    public const string MaxAge = "max_age";
+    public const string Nonce = "nonce";
+    public const string Password = "password";
+    public const string PostLogoutRedirectUri = "post_logout_redirect_uri";
+    public const string Prompt = "prompt";
+    public const string RedirectUri = "redirect_uri";
+    public const string RefreshToken = "refresh_token";
+    public const string RequestUri = "request_uri";
+    public const string Resource = "resource";
+    public const string ResponseMode = "response_mode";
+    public const string ResponseType = "response_type";
+    public const string Scope = "scope";
+    public const string SkuTelemetry = "x-client-SKU";
+    public const string SessionState = "session_state";
+    public const string Sid = "sid";
+    public const string State = "state";
+    public const string TargetLinkUri = "target_link_uri";
+    public const string TokenType = "token_type";
+    public const string UiLocales = "ui_locales";
+    public const string UserId = "user_id";
+    public const string Username = "username";
+    public const string VersionTelemetry = "x-client-ver";
+}
+//---------------------------------------------Ʌ
+```
 

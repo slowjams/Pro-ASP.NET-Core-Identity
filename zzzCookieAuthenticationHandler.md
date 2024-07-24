@@ -47,7 +47,7 @@ public class SignInModel : PageModel    // this is the "/signin" razor page for 
         ClaimsIdentity ident = new ClaimsIdentity("simpleform");
         ident.AddClaim(claim);
 		
-		await HttpContext.SignInAsync(new ClaimsPrincipal(ident));  // <------ calls `CookieAuthenticationHandler.HandleSignInAsync()` interally and it will send redirect request back to user
+		  await HttpContext.SignInAsync(new ClaimsPrincipal(ident));  // <------ calls `CookieAuthenticationHandler.HandleSignInAsync()` interally and it will send redirect back to user
     }
 		 
 	/* <----------------------------------------------------------------------------------incorrect usage to redirect
@@ -441,8 +441,8 @@ public class CookieAuthenticationHandler : SignInAuthenticationHandler<CookieAut
          var expiresUtc = signInContext.Properties.ExpiresUtc ?? issuedUtc.Add(Options.ExpireTimeSpan);
          signInContext.CookieOptions.Expires = expiresUtc.ToUniversalTime();
       }
-
-      var ticket = new AuthenticationTicket(signInContext.Principal!, 
+      
+      var ticket = new AuthenticationTicket(signInContext.Principal!,  // <------------------------------create an AuthenticationTicket here
                                             signInContext.Properties,  // AuthenticationProperties htat contains .redirect, .issued .expires etc are baked into ticket
                                             signInContext.Scheme.Name);
  

@@ -379,15 +379,18 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
                     3. HttpDocumentRetriever.GetDocumentAsync(string address, CancellationToken cancel) invoke which calls `var response = await httpClient.GetAsync(uri, cancel)`
                        this is how the the address is `opts.Authority = "https://localhost:5005"` is called
 
-                    now the configuration contains the result from calling https://localhost:5005/.well-known/openid-configuration , full json, check i2:
-                    
+                    now the configuration contains the result from calling https://localhost:5005/.well-known/openid-configuration , and then `https://localhost:5001/.well-known/openid-configuration/jwks`
+
+                    finally configuration contains someting like:
                     {
-                        "issuer": "https://localhost:5005",
-                        "scopes_supported": [
-                            "movieAPI",
-                            "offline_access"
-                        ],
-                        // ...
+                        Issuer = "https://localhost:5001"
+                        JwksUri = "https://localhost:5001/.well-known/openid-configuration/jwks"
+                        JsonWebKeySet = {Microsoft.IdentityModel.Tokens.JsonWebKeySet}   // <----------get from calling JwksUri
+                        AuthorizationEndpoint = "https://localhost:5001/connect/authorize"
+                        EndSessionEndpoint = "https://localhost:5001/connect/endsession"
+                        CheckSessionIframe = "https://localhost:5001/connect/checksession"
+                        IntrospectionEndpoint = "https://localhost:5001/connect/introspect"
+
                     }
                     
                 */

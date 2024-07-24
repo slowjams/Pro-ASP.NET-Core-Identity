@@ -4,11 +4,11 @@
  **State** and **PKCE** (Proof of Key Code Exchange) solves different problems, that means they cannot replace each other:
 
 
-* State Parameter : Prevent Cross-Site Request Forgery (CSRF) attacks (Hacker tricks you to uses his auth code). Users uses browser.
+* State Parameter (stored on ClientApp) : 
+Prevent Cross-Site Request Forgery (CSRF) attacks (Hacker tricks you to uses his auth code). Users uses browser.
 
-* PKCE: Prevent authorization interception (Hacker steals your auth code)
-Note that it only fits in native mobile desktop environment compared to State Parameter which fits the scenerio that users uses browser). Prerequisite knowledge in OS level URL scheme registration see https://www.oauth.com/oauth2-servers/redirect-uris/redirect-uris-native-apps/
-
+* PKCE (Code Verifier stored on ClientApp, and Code Challenge stored on Authorization Server): Prevent authorization interception (Hacker steals your auth code)
+Note that it only fits in native mobile desktop environment compared to State Parameter which fits the scenerio that users uses browser. Prerequisite knowledge in OS level URL scheme registration see https://www.oauth.com/oauth2-servers/redirect-uris/redirect-uris-native-apps/
 
 Scenario: UserA ask webApp/nativeApp which is an photo process tool we, developers develop to post photos on behalf users to post photos to users' google drive
 
@@ -16,13 +16,13 @@ When **State** Parameter is not used:
 * Both UserA and HackerB registered with webApp. HackerB gets the redirect URL which contains authorization code returned by Google but stops there. HackerB develops a malicious website, UserA previously signin google redirected by webApp before, and now UserA clicks on that malicious website/link which is the HackerB's redirect URL (to webApp), this request goes to webApp with UserA's cookie, webApp authenticates UserA because of the cookie and request access token of HackerB not UserA, so UserA's uploading photos in HackerB's google drive.
 
 After **State** Parameter is used:
-* Before UserA firstly signin google redirected by webApp, **webApp creates anti-forgery state token and store it in the server**, let's say this token is `abc123` (this token will be query string in the URL), and webApp also needs to associate this token with UserA's session id (for cookies later). HackerB does the same process, and the token is `xyz123` on the server. Now HackerB tricks UserA to redirect with HackerA's  redirect URL (to webApp and `xyz123` as query string in this URl) request, when webApp receives this request from UserA, webApp retrieves the UserA session (by using cookie which contains session id) and find UserA's state token is `abc123` not `xyz123`, so webApp declines this request. Note that HackerB won't be able to know UserA's state token
+* Before UserA firstly signin google redirected by webApp, **ClientApp creates anti-forgery state token and store it in the server**, let's say this token is `abc123` (this token will be query string in the URL), and webApp also needs to associate this token with UserA's session id (for cookies later). HackerB does the same process, and the token is `xyz123` on the server. Now HackerB tricks UserA to redirect with HackerB's redirect URL (to webApp and `xyz123` as query string in this URl) request, when webApp receives this request from UserA, ClientApp retrieves the UserA session (by using cookie which contains session id) and find UserA's state token is `abc123` not `xyz123`, so webApp declines this request. Note that HackerB won't be able to know UserA's state token
 
 When **PKCE** Parameter is not used:
 * Now HackerB develops a malicious native app and it is installed on UserA's mobile so UserA has both valid nativeApp(mobile version of webApp) and maliciousApp.  After UserA firstly signin google (redirected by nativeApp in the beginning), google sends a redirection url of clientApp back to UserA, however, it is maliciousApp handles this request (to see why refer to the article above), now hackerB gets userA's auth code,  hackerB knows the nativeApp's client secret, for example, SPA or mobile app will expose client secret to the public (quoted from https://medium.com/@alysachan830/the-basics-of-oauth-2-0-authorization-code-implicit-flow-state-and-pkce-ed95d3478e1c)
 
 When **PKCE** Parameter is used:
-* When userA click signin with google on clientApp, clientApp generate a random value called **Code Verifier** (this code verifier also need to be associated with userA using session/cookie),  then clientApp hashes the Code Verifier and the result is called  **Code Challenge**, and clientApp sends the redirection url (google's signin url with code challenge being a query string) to userA, userA signin with his credentials and do a post request with this code challenge, so google's authoriazation server will store this code challenge (must be associated with auth code behind the scene). Google's authoriazation server sends a redirection url (contains auth code) to userA, even though it is maliciousApp that intercepts this request, HackerB doesn't know Code Verifier, HackerB might know Code Challenge since it is appended to the url which is easy to steal, but that doesn't matter as google's authoriazation server will need original Code Verifier and do a hash function on it to see if the result is same as code challenge before sending the final access token, only clientApp has the userA's Code Verifier.
+* When userA click signin with google on clientApp, clientApp generate a random value called **Code Verifier** (this code verifier also need to be associated with userA using session/cookie),  then clientApp hashes the Code Verifier and the result is called  **Code Challenge**, and clientApp sends the redirection url (google's signin url with code challenge being a query string) to userA, userA signin with his credentials and do a post request with this code challenge, so google's **authoriazation server will store this code challenge** (must be associated with auth code behind the scene). Google's authoriazation server sends a redirection url (contains auth code) to userA, even though it is maliciousApp that intercepts this request, HackerB doesn't know Code Verifier, HackerB might know Code Challenge since it is appended to the url which is easy to steal, but that doesn't matter as google's authoriazation server will need original Code Verifier and do a hash function on it to see if the result is same as code challenge before sending the final access token, only clientApp has the userA's Code Verifier.
  
 ==================================================================================================================
 
@@ -139,39 +139,210 @@ If there's a single pre-registered redirection endpoint, then the redirect_uri p
 
 =======================================================================================
 
+Hybrid Flow, Authorization endpoint returns Id token/Access token while, authorization code flow returns all tokens from  Token Endpoint only
+
+Authorization endpoint
+Token Endpoint
+
+
+
+https://localhost:5005/connect/authorize/callback?client_id=movies_mvc_client&redirect_uri=https%3A%2F%2Flocalhost%3A5002%2Fsignin-oidc&response_type=code%20id_token&scope=openid
+%20profile%20movieAPI&response_mode=form_post&nonce=638572436742702887.YTVhYTA3OTMtYWQ3Yi00MmIyLThlNTQtODVhYzhiNmEyYzcyOWU5ODdkNDQtZWZiNC00ZjBhLWEyMDYtZjJhNDBjMjg1OTU1&state=CfDJ8Fr2n1UxboNJlI8uHVA4skrNR_vPZYZPCuMGC8-rmpTRJxoDiXGl1FJjnNdx_sIAagog-foJvbNnnra2GAVMbCr7qhJ0OtJ-xGZntDsohgabJGkdgfnrwUvmlTrZZKNouJuq4DMK-AWI-iN-eEYWo5tGxPFnHTnlgWcf86X3-k9dRQjAF71ZYX48Q2et1cQTHs0eSP2NK0vDFnYcTO8FcKpPp-vktyVsW79cFEEBoXTHPrU4l6TosBlubDnjAuoNJkK6Yd8mfQApOMxOCPXCA3nWwIEXVkNB0Eju8zOX3N41&x-client-SKU=ID_NETSTANDARD2_0&x-client-ver=6.10.0.0
+
+where is the access/id token in the above redirection url?
+
+
+Q1- .AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
+        {
+            options.SignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;  // <-----------?? to debug and see why this is needed
+        })
+
+
+
+
+
+===========================================================================================
+
+## Request Pipelines
+
+7184: Client  5001: IdentityServer  7075: Api
+
+```C#
+public class ClientProgram  // https://localhost:7184
+{
+    public static void Main(string[] args)
+    {
+        builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+            options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
+        })
+        .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme)
+        .AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
+        {
+            options.SignInScheme = CookieAuthenticationDefaults.AuthenticationScheme; 
+            options.Authority = "https://localhost:5001/";
+            options.ClientId = "imagegalleryclient";
+            options.ClientSecret = "secret";
+            options.ResponseType = "code";
+        });
+    }
+}
+```
+
+A. Run Solution
+
+https://localhost:7184  (goes to ImageGallery.Client's GalleryController's Index)
+
+
+1. `AuthenticationMiddleware` calls `AuthenticateAsync()`  
+2.  `AuthorizationMiddleware` calls default `ChallengeAsync()`
+3. `OpenIdConnectHandler.HandleChallengeAsync()`
+(a1) invoke `https://localhost:5001/.well-known/openid-configuration` and `https://localhost:5001/.well-known/openid-configuration/jwks`
+
+redirect users to `https://localhost:5001/connect/authorize` (a2)
+```C#
+/*
+https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=gxNP3gQQtCv6ybY-1SzRhuJ2lAJcw4xfY63-N0VMp_M&code_challenge_method=S256&response_mode=form_post&nonce=638574178447973386.ZjQ1NjBhYzAtOTVjOC00OWQyLWFjOWUtYWEwYTIwYzNhMWU5ZGQ4NDU0MTktOGQyMi00ZmEzLTlkZjktMDQ4ZTY4MDhiMDM2&state=CfDJ8Fr2n1UxboNJlI8uHVA4skoqzWvRBESNmQtbapScbGyypqXNQqM3EO-KWHib-2DDMkYQWldSjTcokpFYtMjQJD5XN1rtDfaVAAwhUvzEo6e57hN8e2izgZZm4TuLTwaZpBDb1QsoIjGnD-aiIgb_7F9w1k0VBi34RIiLbwcsR-rxYokuDnAeZp0Ndx4TlExO158E9m-58DEigNRBCuaGPWSjZuw2fyT3Z4b6DblgZKSyTGjUwJfu7n8L01lr-CL3xjzc7ZW7Vws647ScwLFdbqAu_IEnDiEokswUxNGR4c6Th5roQZwVmq6T4HvQWGq2J0Xy9KFP6nfZbqLx_hKMht_cqC33G_HSbz_z_GmAJzw5igImxo8LjNRVazD18_t8oA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0
+*/
+```
+
+4. User enter credentials, trigger `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware` handles it (q1)
+
+
+
+
+
+
+
+`CookieAuthenticationHandler.HandleAuthenticateAsync()`
+
+`AuthenticationService.AuthenticateAsync()`
+
+==========================================================================================
+
+```C#
+public abstract class Resource
+{
+    public bool Enabled { get; set; } = true;
+    public string Name { get; set; } = default!;
+    public string? DisplayName { get; set; }
+    public string? Description { get; set; }
+    public bool ShowInDiscoveryDocument { get; set; } = true;
+    public ICollection<string> UserClaims { get; set; } = new HashSet<string>();
+    public IDictionary<string, string> Properties { get; set; } = new Dictionary<string, string>();
+}
+```
 
 `Scope` is kind of a role to access a specific set of resources. IdentityServer has two scope types: 
 
-* **Identity Scope** : representing identity data (e.g. profile or email)
+* **Identity Scope** : representing identity data (e.g. profile or email), goes to **id token**
 
 ```C#
 public class IdentityResource : Resource
 {
-    // ...
+    public IdentityResource() { }
+
+    public IdentityResource(string name, IEnumerable<string> userClaims) : this(name, name, userClaims) { }
+
+    public IdentityResource(string name, string displayName, IEnumerable<string> userClaims)
+    {
+        Name = name;
+        DisplayName = displayName;
+
+        foreach(var type in userClaims)
+        {
+            UserClaims.Add(type);
+        }      
+    }
+
+    public bool Required { get; set; } = false;
+    public bool Emphasize { get; set; } = false;
 }
 
 public class OpenId : IdentityResource
 {
     public OpenId()
     {
-        Name = IdentityServerConstants.StandardScopes.OpenId;
+        Name = IdentityServerConstants.StandardScopes.OpenId;  // "openid"
         DisplayName = "Your user identifier";
         Required = true;
         UserClaims.Add(JwtClaimTypes.Subject);
     }
 }
+
+public class Profile : IdentityResource
+{
+    public Profile()
+    {
+        Name = IdentityServerConstants.StandardScopes.Profile;  // "profile"
+        DisplayName = "User profile";
+        Description = "Your user profile information (first name, last name, etc.)";
+        Emphasize = true;
+        UserClaims = Constants.ScopeToClaimsMapping[IdentityServerConstants.StandardScopes.Profile].ToList();
+    }
+}
 ```
 
-* **Resource Scope** : representing a resource (e.g. a web api)
+* **Resource Scope** : representing a resource (e.g. a web api), goes to **access token**
 
 ```C#
 public class ApiScope : Resource
 {
-    // ...
+    public ApiScope() { }
+    public ApiScope(string name) : this(name, name, null) { }
+    public ApiScope(string name, string displayName) : this(name, displayName, null) { }
+    public ApiScope(string name, IEnumerable<string> userClaims) : this(name, name, userClaims) { }
+    public ApiScope(string name, string displayName, IEnumerable<string>? userClaims)
+    {
+        Name = name;
+        DisplayName = displayName;
+
+        if (!userClaims.IsNullOrEmpty())
+        {
+            foreach (var type in userClaims!)
+            {
+                UserClaims.Add(type);
+            }
+        }
+    }
+
+    public bool Required { get; set; } = false;
+    public bool Emphasize { get; set; } = false;
 }
 ```
 
+ApiResource
 
+```C#
+public class ApiResource : Resource
+{
+    public ApiResource() { }
+    public ApiResource(string name) : this(name, name, null) { }
+    public ApiResource(string name, string displayName) : this(name, displayName, null) { }
+    public ApiResource(string name, IEnumerable<string> userClaims) : this(name, name, userClaims) { }
+
+    public ApiResource(string name, string displayName, IEnumerable<string> userClaims)
+    {
+        Name = name;
+        DisplayName = displayName;
+
+        if (!userClaims.IsNullOrEmpty())
+        {
+            foreach (var type in userClaims)
+            {
+                UserClaims.Add(type);
+            }
+        }
+    }
+
+    public ICollection<Secret> ApiSecrets { get; set; } = new HashSet<Secret>();
+    public ICollection<string> Scopes { get; set; } = new HashSet<string>();
+    public ICollection<string> AllowedAccessTokenSigningAlgorithms { get; set; } = new HashSet<string>();
+}
+```
+
+===================================================================================================================================
 
 ```C#
 //--------------------------------V IdentityServer runs on https://localhost:5001
