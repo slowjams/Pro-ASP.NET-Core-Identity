@@ -307,7 +307,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         return Task.FromResult((object)new OpenIdConnectEvents());
     }
 
-    public override Task<bool> HandleRequestAsync()
+    public override Task<bool> HandleRequestAsync()   // <----------------------o1.0
     {
         if (base.Options.RemoteSignOutPath.HasValue && base.Options.RemoteSignOutPath == base.Request.Path)
         {
@@ -319,7 +319,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             return HandleSignOutCallbackAsync();
         }
 
-        return base.HandleRequestAsync();
+        return base.HandleRequestAsync();  // <----------------------o1.1.
     }
 
     protected virtual async Task<bool> HandleRemoteSignOutAsync()
@@ -663,7 +663,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         throw new NotImplementedException($"An unsupported authentication method has been configured: {base.Options.AuthenticationMethod}");
     }
 
-    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()
+    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()   // <----------------------------------------o3.0
     {
         base.Logger.EnteringOpenIdAuthenticationHandlerHandleRemoteAuthenticateAsync(GetType().FullName);
         OpenIdConnectMessage authorizationResponse = null;
@@ -795,101 +795,129 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 Nonce = nonce2
             });
             OpenIdConnectMessage openIdConnectMessage = null;
+             // Authorization Code or Hybrid flow
             if (!string.IsNullOrEmpty(authorizationResponse.Code))
             {
-                AuthorizationCodeReceivedContext authorizationCodeReceivedContext = await RunAuthorizationCodeReceivedEventAsync(authorizationResponse, user, properties, jwt);
+                var authorizationCodeReceivedContext = 
+                    await RunAuthorizationCodeReceivedEventAsync(authorizationResponse, user, properties!, jwt);  // <----------------------o3.1
+
                 if (authorizationCodeReceivedContext.Result != null)
                 {
                     return authorizationCodeReceivedContext.Result;
                 }
-
                 authorizationResponse = authorizationCodeReceivedContext.ProtocolMessage;
-                user = authorizationCodeReceivedContext.Principal;
-                properties = authorizationCodeReceivedContext.Properties;
-                OpenIdConnectMessage tokenEndpointRequest = authorizationCodeReceivedContext.TokenEndpointRequest;
-                openIdConnectMessage = authorizationCodeReceivedContext.TokenEndpointResponse;
-                jwt = authorizationCodeReceivedContext.JwtSecurityToken;
+                user = authorizationCodeReceivedContext.Principal!;
+                properties = authorizationCodeReceivedContext.Properties!;
+                var tokenEndpointRequest = authorizationCodeReceivedContext.TokenEndpointRequest;
+                // If the developer redeemed the code themselves...
+                tokenEndpointResponse = authorizationCodeReceivedContext.TokenEndpointResponse;
+                jwt = authorizationCodeReceivedContext.JwtSecurityToken!;
+
                 if (!authorizationCodeReceivedContext.HandledCodeRedemption)
                 {
-                    openIdConnectMessage = await RedeemAuthorizationCodeAsync(tokenEndpointRequest);
+                    tokenEndpointResponse = await RedeemAuthorizationCodeAsync(tokenEndpointRequest!);  // <-------------------------o3.2
                 }
 
-                TokenResponseReceivedContext tokenResponseReceivedContext = await RunTokenResponseReceivedEventAsync(authorizationResponse, openIdConnectMessage, user, properties);
+                var tokenResponseReceivedContext = await RunTokenResponseReceivedEventAsync(authorizationResponse, tokenEndpointResponse!, user, properties);
                 if (tokenResponseReceivedContext.Result != null)
                 {
                     return tokenResponseReceivedContext.Result;
                 }
 
                 authorizationResponse = tokenResponseReceivedContext.ProtocolMessage;
-                openIdConnectMessage = tokenResponseReceivedContext.TokenEndpointResponse;
-                user = tokenResponseReceivedContext.Principal;
-                properties = tokenResponseReceivedContext.Properties;
+                tokenEndpointResponse = tokenResponseReceivedContext.TokenEndpointResponse;
+                user = tokenResponseReceivedContext.Principal;   // <----------------------user is null here
+                properties = tokenResponseReceivedContext.Properties!;
+
+                // no need to validate signature when token is received using "code flow" as per spec
+                // [http://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation].
                 validationParameters.RequireSignedTokens = false;
-                JwtSecurityToken jwt3;
-                ClaimsPrincipal user4 = ValidateToken(openIdConnectMessage.IdToken, properties, validationParameters, out jwt3);
-                if (user == null)
+
+                // At least a cursory validation is required on the new IdToken, even if we've already validated the one from the authorization response.
+                // And we'll want to validate the new JWT in ValidateTokenResponse.
+                ClaimsPrincipal tokenEndpointUser;
+                JwtSecurityToken tokenEndpointJwt;
+
+                if (!Options.UseSecurityTokenValidator)
                 {
-                    nonce2 = jwt3.Payload.Nonce;
-                    if (!string.IsNullOrEmpty(nonce2))
-                    {
-                        nonce2 = ReadNonceCookie(nonce2);
-                    }
-
-                    TokenValidatedContext tokenValidatedContext2 = await RunTokenValidatedEventAsync(authorizationResponse, openIdConnectMessage, user4, properties, jwt3, nonce2);
-                    if (tokenValidatedContext2.Result != null)
-                    {
-                        return tokenValidatedContext2.Result;
-                    }
-
-                    authorizationResponse = tokenValidatedContext2.ProtocolMessage;
-                    openIdConnectMessage = tokenValidatedContext2.TokenEndpointResponse;
-                    user = tokenValidatedContext2.Principal;
-                    properties = tokenValidatedContext2.Properties;
-                    jwt = tokenValidatedContext2.SecurityToken;
-                    nonce2 = tokenValidatedContext2.Nonce;
+                    var tokenValidationResult = 
+                        await ValidateTokenUsingHandlerAsync(tokenEndpointResponse.IdToken, properties, validationParameters);   // <---------use IdToken to create ClaimIdentity
+                    
+                    tokenEndpointUser = new ClaimsPrincipal(tokenValidationResult.ClaimsIdentity);   // <----------------------------------------o4.0
+                    
+                    tokenEndpointJwt = JwtSecurityTokenConverter.Convert(tokenValidationResult.SecurityToken as JsonWebToken);
                 }
                 else
                 {
-                    if (!string.Equals(jwt.Subject, jwt3.Subject, StringComparison.Ordinal))
+                    tokenEndpointUser = ValidateToken(tokenEndpointResponse.IdToken, properties, validationParameters, out tokenEndpointJwt);
+                }
+
+                // Avoid reading & deleting the nonce cookie, running the event, etc, if it was already done as part of the authorization response validation.
+                if (user == null)
+                {
+                    nonce = tokenEndpointJwt.Payload.Nonce;
+                    if (!string.IsNullOrEmpty(nonce))
+                    {
+                        nonce = ReadNonceCookie(nonce);
+                    }
+
+                    var tokenValidatedContext = await RunTokenValidatedEventAsync(authorizationResponse, tokenEndpointResponse, tokenEndpointUser, properties, tokenEndpointJwt, nonce);
+                    if (tokenValidatedContext.Result != null)
+                    {
+                        return tokenValidatedContext.Result;
+                    }
+                    authorizationResponse = tokenValidatedContext.ProtocolMessage;
+                    tokenEndpointResponse = tokenValidatedContext.TokenEndpointResponse;
+                    user = tokenValidatedContext.Principal!;   // <----------------------------------------o4.1 user is set now
+                    properties = tokenValidatedContext.Properties;
+                    jwt = tokenValidatedContext.SecurityToken;
+                    nonce = tokenValidatedContext.Nonce;
+                }
+                else
+                {
+                    if (!string.Equals(jwt.Subject, tokenEndpointJwt.Subject, StringComparison.Ordinal))
                     {
                         throw new SecurityTokenException("The sub claim does not match in the id_token's from the authorization and token endpoints.");
                     }
 
-                    jwt = jwt3;
+                    jwt = tokenEndpointJwt;
                 }
 
+                // Validate the token response if it wasn't provided manually
                 if (!authorizationCodeReceivedContext.HandledCodeRedemption)
                 {
-                    base.Options.ProtocolValidator.ValidateTokenResponse(new OpenIdConnectProtocolValidationContext
+                    Options.ProtocolValidator.ValidateTokenResponse(new OpenIdConnectProtocolValidationContext()
                     {
-                        ClientId = base.Options.ClientId,
-                        ProtocolMessage = openIdConnectMessage,
+                        ClientId = Options.ClientId,
+                        ProtocolMessage = tokenEndpointResponse,
                         ValidatedIdToken = jwt,
-                        Nonce = nonce2
+                        Nonce = nonce
                     });
                 }
             }
 
-            if (base.Options.SaveTokens)
+            if (Options.SaveTokens)
             {
-                SaveTokens(properties, openIdConnectMessage ?? authorizationResponse);
+                SaveTokens(properties!, tokenEndpointResponse ?? authorizationResponse);  // <----------------------------------------o4.2
             }
 
-            if (base.Options.GetClaimsFromUserInfoEndpoint)  // <----------------------------
+            if (Options.GetClaimsFromUserInfoEndpoint)
             {
-                return await GetUserInformationAsync(openIdConnectMessage ?? authorizationResponse, jwt, user, properties);
+                return await GetUserInformationAsync(tokenEndpointResponse ?? authorizationResponse, jwt!, user!, properties!);
             }
-
-            using (JsonDocument jsonDocument = JsonDocument.Parse("{}"))
+            else
             {
-                ClaimsIdentity identity = (ClaimsIdentity)user.Identity;
-                foreach (ClaimAction claimAction in base.Options.ClaimActions)
+                using (var payload = JsonDocument.Parse("{}"))
                 {
-                    claimAction.Run(jsonDocument.RootElement, identity, ClaimsIssuer);
+                    var identity = (ClaimsIdentity)user!.Identity!;
+                    foreach (var action in Options.ClaimActions)
+                    {
+                        action.Run(payload.RootElement, identity, ClaimsIssuer);
+                    }
                 }
             }
 
-            return HandleRequestResult.Success(new AuthenticationTicket(user, properties, base.Scheme.Name));
+            return HandleRequestResult.Success(new AuthenticationTicket(user, properties, Scheme.Name));   // <----------------------------------------o4.4. user is authenticated now
         }
         catch (Exception exception)
         {
@@ -939,13 +967,16 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         }
     }
 
-    protected virtual async Task<OpenIdConnectMessage> RedeemAuthorizationCodeAsync(OpenIdConnectMessage tokenEndpointRequest)
+    protected virtual async Task<OpenIdConnectMessage> RedeemAuthorizationCodeAsync(OpenIdConnectMessage tokenEndpointRequest)   // <------------------------o3.2.0
     {
         base.Logger.RedeemingCodeForTokens();
+                                                                     // TokenEndpoint is https://localhost:5001/connect/token
         HttpRequestMessage httpRequestMessage = new HttpRequestMessage(HttpMethod.Post, tokenEndpointRequest.TokenEndpoint ?? _configuration?.TokenEndpoint);
         httpRequestMessage.Content = new FormUrlEncodedContent(tokenEndpointRequest.Parameters);
         httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
-        HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);
+
+        HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <------------------------o3.2.1.
+                                                                                                                             // exchange auth code for access code
         string text = responseMessage.Content.Headers.ContentType?.MediaType;
         if (string.IsNullOrEmpty(text))
         {
@@ -972,6 +1003,50 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         }
 
         return openIdConnectMessage;
+
+        /* openIdConnectMessage contains both access token and id token
+
+        access token:
+        {
+           "iss": "https://localhost:5001",
+           "nbf": 1721992836,
+           "iat": 1721992836,
+           "exp": 1721996436,
+           "aud": "https://localhost:5001/resources",
+           "scope": [
+               "openid",
+               "profile"
+           ],
+           "amr": [
+               "pwd"
+           ],
+           "client_id": "imagegalleryclient",
+           "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+           "auth_time": 1721992825,
+           "idp": "local",
+           "sid": "9FDA47CA6FF69E743E1298E10D3D6424",
+           "jti": "7329E425E9973BEAE2B88DCB72A27FEC"
+         }
+
+        id token:      
+        {
+           "iss": "https://localhost:5001",
+           "nbf": 1721992836,
+           "iat": 1721992836,
+           "exp": 1721993136,
+           "aud": "imagegalleryclient",
+           "amr": [
+               "pwd"
+           ],
+           "nonce": "638575896217007596.ZmVlZWNiNzEtZDJkNS00N2VlLWJmMmItZmM3YjIzM2VkNDExYjVmM2RiYTMtNzYxMi00OTc2LWEzZDEtZTBmNmZjZjNlYjg3",
+           "at_hash": "OW66WFmR8RXkZMOx-jGDSg",
+           "sid": "9FDA47CA6FF69E743E1298E10D3D6424",
+           "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+           "auth_time": 1721992825,
+           "idp": "local"
+        }
+
+        */
     }
 
     protected virtual async Task<HandleRequestResult> GetUserInformationAsync(OpenIdConnectMessage message, JwtSecurityToken jwt, ClaimsPrincipal principal, AuthenticationProperties properties)
@@ -993,8 +1068,10 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         HttpRequestMessage httpRequestMessage = new HttpRequestMessage(HttpMethod.Get, text);
         httpRequestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", message.AccessToken);
         httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
-        HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);
+
+        HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <-------------------
         responseMessage.EnsureSuccessStatusCode();
+
         string userInfoResponse = await responseMessage.Content.ReadAsStringAsync(base.Context.RequestAborted);
         MediaTypeHeaderValue contentType = responseMessage.Content.Headers.ContentType;
         JsonDocument jsonDocument;
@@ -1038,7 +1115,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, base.Scheme.Name));
     }
 
-    private void SaveTokens(AuthenticationProperties properties, OpenIdConnectMessage message)
+    private void SaveTokens(AuthenticationProperties properties, OpenIdConnectMessage message)  
     {
         List<AuthenticationToken> list = new List<AuthenticationToken>();
         if (!string.IsNullOrEmpty(message.AccessToken))
@@ -1087,7 +1164,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             });
         }
 
-        properties.StoreTokens(list);
+        properties.StoreTokens(list);  // <------------------o4.3 save token into AuthenticationProperties.Items which will be part of AuthenticationTicket then serilzed into cookies
     }
 
     private void WriteNonceCookie(string nonce)
@@ -1208,7 +1285,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             JwtSecurityToken = jwt,
             Backchannel = Backchannel
         };
-        await Events.AuthorizationCodeReceived(context);
+        await Events.AuthorizationCodeReceived(context);   // <---------------------------------o3.1, for users to override 
         if (context.Result != null)
         {
             if (context.Result.Handled)
@@ -1362,11 +1439,11 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
 
     protected override Task<object> CreateEventsAsync() => Task.FromResult<object>(new RemoteAuthenticationEvents());
 
-    public virtual Task<bool> ShouldHandleRequestAsync()  => Task.FromResult(Options.CallbackPath == Request.Path);
-
-    public virtual async Task<bool> HandleRequestAsync()
+    public virtual Task<bool> ShouldHandleRequestAsync()  => Task.FromResult(Options.CallbackPath == Request.Path);  // <-------o2.1 CallbackPath and Path matches which is "signin-oidc"
+                                                                                                                     // so it can intercept the callback like ExternalAuthHandler
+    public virtual async Task<bool> HandleRequestAsync()  // <----------------------------o2.0
     {
-        if (!await ShouldHandleRequestAsync())
+        if (!await ShouldHandleRequestAsync())   // <------------------------o2.1
         {
             return false;
         }
@@ -1376,7 +1453,7 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
         AuthenticationProperties? properties = null;
         try
         {
-            var authResult = await HandleRemoteAuthenticateAsync();
+            var authResult = await HandleRemoteAuthenticateAsync();  // <----------------------------o2.2.
             if (authResult == null)
             {
                 exception = new InvalidOperationException("Invalid return state, unable to redirect.");
@@ -1435,7 +1512,7 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
             }
         }
 
-        await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);
+        await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);  // <-------------o5.0 CookieAuthenticationHandler serialize ClaimsIdentity into cookie
 
         // Default redirect path is the base path
         if (string.IsNullOrEmpty(ticketContext.ReturnUri))
@@ -1443,7 +1520,8 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
             ticketContext.ReturnUri = "/";
         }
 
-        Response.Redirect(ticketContext.ReturnUri);
+        Response.Redirect(ticketContext.ReturnUri);  // <----------------------------o5.1.   ReturnUri is the original user request path such as controller/index
+                                                     // Response redirect also sends the cookie created above so that users' next request can come with cookoie
         return true;
     }
 

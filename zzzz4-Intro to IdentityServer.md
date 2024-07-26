@@ -207,7 +207,51 @@ https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_u
 */
 ```
 
-4. User enter credentials, trigger `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware` handles it (q1)
+4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware` handles it (q2 on IdentityServer4 Source Code)
+and redirect users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback` which flows from the Razor Page's `OnGet` to `OnPost` , the redirection request is below:
+
+```C#
+/*
+https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback%3Fclient_id%3Dimagegalleryclient% 26redirect_uri%3Dhttps%253A%252F% 252Flocalhost%253A7184%252Fsignin-oidc %26response_type%3Dcode%26scope%3Dopenid%2520profile%26code_challenge%3DXXX
+*/
+```
+
+5. User enter credentials, trigger `/Account/Login` post back (i5), calls `HttpContext.SignInAsync("Cookie")` (so IdentityUser is transformed to ClaimsPrincipal then AuthenticationTicket is added into cookie), then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
+
+```C#
+/*
+
+/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=C65uIECsCXnqwGPFOlU1fbmZ9pXvKNxmvCx5v3kiHI4&code_challenge_method=S256&response_mode=form_post&nonce=638574267416022614.MDU0MTRjMjgtZTkyMC00YmFhLWJhYWItN2VhNTdhZTY4YmIxNGM0MjE0N2ItYjNjYy00NGMxLThiYjctYzc1NjY2MGNiNDll&state=CfDJ8Fr2n1UxboNJlI8uHVA4skp7SK2F0Vxutc5qOeTZGQyGWEPBj4A1Ehs8MXQJsYylUCPpd3NjXQEtUPQ5cNPS-ORlAw_pDzW5TDRJxEfm_3PziPZBlGE-vff_m3DJna4mOcM7R6vIZHKPsx5Stf2h7D9D5AAeeOeILPDWyJiKdODSRSZZCbPKIaspX5eDxN8E6_6OXjo5TLrk-qkpBiW36V9mWVXffF3OVF9EM0vkB-lkLbrTIMdO5QscZzs4s3vR8nbL6jclJMkPwiy5GDjgRDvDuqAI14LtVhAGdXfZr0xA3BXCu1Ocfht8I2bpb9PnLGVzAnCFFlgOEaWu6otftkQGoQJNt83lJd7OPFkCOHbxms8PbV3kBIw-C_ubRWRFmw&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
+
+*/
+```
+
+6. `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request, then somehow (must be other middleware of IdentityServer) a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+
+```C#
+/*  https://localhost:7184/signin-oidc POST
+    body:
+    {
+        code: EA4785B99D609C359E14512C70724FFEFFC15F5EA445486B1B072E73CF3FF8CC-1
+        scope: openid+profile
+        state: CfDJ8Fr2n1UxboNJlI8uHVA4skryuRiPt-1-mhFSMYxXnAqQXXX
+        session_state: e35UPvqWXV_cxZ3bBNM-fZEpln9j5Qh4JrVxbX0L9is.28084428FDF3B4FCDC5EDB4D69D3DC4F
+        iss: https://localhost:5001
+    }
+*/
+```
+
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1), then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag)
+
+
+
+
+
+
+
+While GalleryController.Index is hiting the breakpoint when url is above? why?
+
+then recirect to https://localhost:7184   ?  but identityToken is null why?
 
 
 

@@ -37,6 +37,7 @@ public class Program
 
 
 * How does `.well-known/openid-configuration` or `/connect/authorize` response (`/Account/Login` page) get generated? Inside `IdentityServerMiddleware` q1, q2
+* How does `/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=C65uIECsHI4&code_challenge_method=S256XXX` request get handled? (o1-)
 
 =====================================================================================================================
 
@@ -230,8 +231,8 @@ public static class IdentityServerBuilderExtensionsCore
     {
         builder.Services.AddTransient<IEndpointRouter, EndpointRouter>();  // <---------------------------------q1, it is IdentityServer's own Router like UseRouting()
  
-        builder.AddEndpoint<AuthorizeCallbackEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.AuthorizeCallback.EnsureLeadingSlash());
-        builder.AddEndpoint<AuthorizeEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.Authorize.EnsureLeadingSlash());   // <-----------------------q1 handles /connect/authorize
+        builder.AddEndpoint<AuthorizeCallbackEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.AuthorizeCallback.EnsureLeadingSlash());   // <---------------------c1.0
+        builder.AddEndpoint<AuthorizeEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.Authorize.EnsureLeadingSlash());   // <-----------------------q1,q2 handles /connect/authorize
         builder.AddEndpoint<CheckSessionEndpoint>(EndpointNames.CheckSession, ProtocolRoutePaths.CheckSession.EnsureLeadingSlash());
         builder.AddEndpoint<DeviceAuthorizationEndpoint>(EndpointNames.DeviceAuthorization, ProtocolRoutePaths.DeviceAuthorization.EnsureLeadingSlash());
         builder.AddEndpoint<DiscoveryKeyEndpoint>(EndpointNames.Discovery, ProtocolRoutePaths.DiscoveryWebKeys.EnsureLeadingSlash());
@@ -539,7 +540,7 @@ internal class EndpointRouter : IEndpointRouter
 }
 //---------------------------Ʌ
 
-//------------------------------V
+//------------------------------V  handle /connect/authorize
 internal class AuthorizeEndpoint : AuthorizeEndpointBase
 {
     public AuthorizeEndpoint(
@@ -597,6 +598,258 @@ internal class AuthorizeEndpoint : AuthorizeEndpointBase
     }
 }
 //------------------------------Ʌ
+
+//--------------------------------------V handle /connect/authorize/callback
+internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
+{
+    public AuthorizeCallbackEndpoint(
+        IEventService events,
+        ILogger<AuthorizeCallbackEndpoint> logger,
+        IdentityServerOptions options,
+        IAuthorizeRequestValidator validator,
+        IAuthorizeInteractionResponseGenerator interactionGenerator,
+        IAuthorizeResponseGenerator authorizeResponseGenerator,
+        IUserSession userSession,
+        IConsentMessageStore consentResponseStore,
+        IAuthorizationParametersMessageStore authorizationParametersMessageStore = null)
+        : base(events, logger, options, validator, interactionGenerator, authorizeResponseGenerator, userSession, consentResponseStore, authorizationParametersMessageStore)
+    {
+    }
+
+    public override async Task<IEndpointResult> ProcessAsync(HttpContext context)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.Authorize + "CallbackEndpoint");
+        
+        if (!HttpMethods.IsGet(context.Request.Method))
+        {
+            Logger.LogWarning("Invalid HTTP method for authorize endpoint.");
+            return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
+        }
+
+        Logger.LogDebug("Start authorize callback request");
+
+        var parameters = context.Request.Query.AsNameValueCollection();
+        var user = await UserSession.GetUserAsync();
+
+        var result = await ProcessAuthorizeRequestAsync(parameters, user, true);  // <--------------------------------c1.1.
+        /*  result is Duende.IdentityServer.Endpoints.Results.AuthorizeResult}, the content is          
+           {
+              AccessToken = null
+              AccessTokenLifetime = 0
+              Code = "CFDB61434AA087352A27D8A743C81F544C0CBDB3E674AC6FFA7E0AE92FDFD967-1"
+              IdentityToken = null
+              Issuer = "https://localhost:5001"
+              RedirectUri = "https://localhost:7184/signin-oidc"
+              Request = {Duende.IdentityServer.Validation.ValidatedAuthorizeRequest}
+              Scope = "openid profile"
+              SessionState = "0A1p6zn4hcizfpMeipQE3EgmOavZyi6IKFORo1D_UY.90C2D968BDBEBFFD7839BD0AEA5E74CE"
+              State = "CfDJ8Fr2n1UxboNJlI8uHVA4skobbheKboVu0uc-Sw82YrXv0FSfGKT7h0rLyCJv18oA_-76qioJpUgqSBOy64XArrHcs_bRqkg1q7ZSkFLeT..."
+           }
+        */
+
+        Logger.LogTrace("End Authorize Request. Result type: {0}", result?.GetType().ToString() ?? "-none-");
+
+        return result;
+    }
+}
+//--------------------------------------Ʌ
+
+//-------------------------------------V
+public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
+{
+    protected IdentityServerOptions Options;
+    protected readonly ITokenService TokenService;
+    protected readonly IAuthorizationCodeStore AuthorizationCodeStore;
+    protected readonly IEventService Events;
+    protected readonly ILogger Logger;
+    protected readonly IClock Clock;
+    protected readonly IKeyMaterialService KeyMaterialService;
+
+    public AuthorizeResponseGenerator(
+        IdentityServerOptions options,
+        IClock clock,
+        ITokenService tokenService,
+        IKeyMaterialService keyMaterialService,
+        IAuthorizationCodeStore authorizationCodeStore,
+        ILogger<AuthorizeResponseGenerator> logger,
+        IEventService events)
+    {
+        Options = options;
+        Clock = clock;
+        TokenService = tokenService;
+        KeyMaterialService = keyMaterialService;
+        AuthorizationCodeStore = authorizationCodeStore;
+        Logger = logger;
+        Events = events;
+    }
+
+    public virtual async Task<AuthorizeResponse> CreateResponseAsync(ValidatedAuthorizeRequest request)   // <----------------------c3.0
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity("AuthorizeResponseGenerator.CreateResponse");
+
+        if (request.GrantType == GrantType.AuthorizationCode)
+        {
+            return await CreateCodeFlowResponseAsync(request);   // <----------------------c3.1
+        }
+        if (request.GrantType == GrantType.Implicit)
+        {
+            return await CreateImplicitFlowResponseAsync(request);
+        }
+        if (request.GrantType == GrantType.Hybrid)
+        {
+            return await CreateHybridFlowResponseAsync(request);
+        }
+
+        Logger.LogError("Unsupported grant type: " + request.GrantType);
+        throw new InvalidOperationException("invalid grant type: " + request.GrantType);
+    }
+
+    protected virtual async Task<AuthorizeResponse> CreateHybridFlowResponseAsync(ValidatedAuthorizeRequest request)
+    {
+        Logger.LogDebug("Creating Hybrid Flow response.");
+
+        var code = await CreateCodeAsync(request);
+        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);
+
+        var response = await CreateImplicitFlowResponseAsync(request, id);
+        response.Code = id;
+
+        return response;
+    }
+
+    protected virtual async Task<AuthorizeResponse> CreateCodeFlowResponseAsync(ValidatedAuthorizeRequest request)  // <----------------------c3.2
+    {
+        Logger.LogDebug("Creating Authorization Code Flow response.");
+
+        var code = await CreateCodeAsync(request);  // <----------------------c3.2
+        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);
+
+        var response = new AuthorizeResponse
+        {
+            Issuer = request.IssuerName,
+            Request = request,
+            Code = id,
+            SessionState = request.GenerateSessionStateValue()
+        };
+
+        return response;
+    }
+
+    protected virtual async Task<AuthorizeResponse> CreateImplicitFlowResponseAsync(ValidatedAuthorizeRequest request, string authorizationCode = null)
+    {
+        Logger.LogDebug("Creating Implicit Flow response.");
+
+        string accessTokenValue = null;
+        int accessTokenLifetime = 0;
+
+        var responseTypes = request.ResponseType.FromSpaceSeparatedString();
+
+        if (responseTypes.Contains(OidcConstants.ResponseTypes.Token))
+        {
+            var tokenRequest = new TokenCreationRequest
+            {
+                Subject = request.Subject,
+                // implicit responses do not allow resource indicator, so no resource indicator filtering needed here
+                ValidatedResources = request.ValidatedResources,
+
+                ValidatedRequest = request
+            };
+
+            var accessToken = await TokenService.CreateAccessTokenAsync(tokenRequest);
+            accessTokenLifetime = accessToken.Lifetime;
+
+            accessTokenValue = await TokenService.CreateSecurityTokenAsync(accessToken);
+        }
+
+        string jwt = null;
+        if (responseTypes.Contains(OidcConstants.ResponseTypes.IdToken))
+        {
+            string stateHash = null;
+                
+            if (Options.EmitStateHash && request.State.IsPresent())
+            {
+                var credential = await KeyMaterialService.GetSigningCredentialsAsync(request.Client.AllowedIdentityTokenSigningAlgorithms);
+                if (credential == null)
+                {
+                    throw new InvalidOperationException("No signing credential is configured.");
+                }
+
+                var algorithm = credential.Algorithm;
+                stateHash = CryptoHelper.CreateHashClaimValue(request.State, algorithm);
+            }
+
+            var tokenRequest = new TokenCreationRequest
+            {
+                ValidatedRequest = request,
+                Subject = request.Subject,
+                ValidatedResources = request.ValidatedResources,
+                Nonce = request.Raw.Get(OidcConstants.AuthorizeRequest.Nonce),
+                IncludeAllIdentityClaims = !request.AccessTokenRequested,
+                AccessTokenToHash = accessTokenValue,
+                AuthorizationCodeToHash = authorizationCode,
+                StateHash = stateHash
+            };
+
+            var idToken = await TokenService.CreateIdentityTokenAsync(tokenRequest);
+            jwt = await TokenService.CreateSecurityTokenAsync(idToken);
+        }
+
+        var response = new AuthorizeResponse
+        {
+            Request = request,
+            AccessToken = accessTokenValue,
+            AccessTokenLifetime = accessTokenLifetime,
+            IdentityToken = jwt,
+            SessionState = request.GenerateSessionStateValue()
+        };
+
+        return response;
+    }
+
+    protected virtual async Task<AuthorizationCode> CreateCodeAsync(ValidatedAuthorizeRequest request)   // <----------------------c3.3
+    {
+        string stateHash = null;
+        if (Options.EmitStateHash && request.State.IsPresent())
+        {
+            var credential = await KeyMaterialService.GetSigningCredentialsAsync(request.Client.AllowedIdentityTokenSigningAlgorithms);
+            if (credential == null)
+            {
+                throw new InvalidOperationException("No signing credential is configured.");
+            }
+
+            var algorithm = credential.Algorithm;
+            stateHash = CryptoHelper.CreateHashClaimValue(request.State, algorithm);
+        }
+
+        var code = new AuthorizationCode   // <----------------------c3.4.
+        {
+            CreationTime = Clock.UtcNow.UtcDateTime,
+            ClientId = request.Client.ClientId,
+            Lifetime = request.Client.AuthorizationCodeLifetime,
+            Subject = request.Subject,
+            SessionId = request.SessionId,
+            Description = request.Description,
+            CodeChallenge = request.CodeChallenge.Sha256(),
+            CodeChallengeMethod = request.CodeChallengeMethod,
+            DPoPKeyThumbprint = request.DPoPKeyThumbprint,
+
+            IsOpenId = request.IsOpenIdRequest,
+            RequestedScopes = request.ValidatedResources.RawScopeValues,
+            RequestedResourceIndicators = request.RequestedResourceIndicators,
+            RedirectUri = request.RedirectUri,
+            Nonce = request.Nonce,
+            StateHash = stateHash,
+
+            WasConsentShown = request.WasConsentShown
+        };
+
+        return code;
+    }
+}
+//-------------------------------------Ʌ
+```
+
+```C#
 //-----------------------------------------V
 public static class IdentityServerConstants
 {
@@ -1221,6 +1474,23 @@ public class DefaultClaimsService : IClaimsService
 }
 //-------------------------------Ʌ
 
+//-------------------------------------------------V  Extension methods for signin/out using the IdentityServer authentication scheme.
+public static class AuthenticationManagerExtensions
+{ 
+    public static async Task SignInAsync(this HttpContext context, IdentityServerUser user)
+    {
+        await context.SignInAsync(await context.GetCookieAuthenticationSchemeAsync(), user.c());   // <-----------------------------i5
+    }
+
+    public static async Task SignInAsync(this HttpContext context, IdentityServerUser user, AuthenticationProperties properties)
+    {
+        await context.SignInAsync(await context.GetCookieAuthenticationSchemeAsync(), user.CreatePrincipal(), properties);
+    }
+
+    internal static async Task<string> GetCookieAuthenticationSchemeAsync(this HttpContext context) { ... }
+}
+//-------------------------------------------------Ʌ
+
 //------------------------------------------------V
 internal class IdentityServerAuthenticationService : IAuthenticationService
 {
@@ -1719,7 +1989,7 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
  
     public abstract Task<IEndpointResult> ProcessAsync(HttpContext context);
 
-    internal async Task<IEndpointResult> ProcessAuthorizeRequestAsync(NameValueCollection parameters, ClaimsPrincipal user, ConsentResponse consent)
+    internal async Task<IEndpointResult> ProcessAuthorizeRequestAsync(NameValueCollection parameters, ClaimsPrincipal user, ConsentResponse consent)  // <------------------c2.0
     {          
         var result = await _validator.ValidateAsync(parameters, user);
         if (result.IsError)
@@ -1748,7 +2018,7 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
             return new CustomRedirectResult(request, interactionResult.RedirectUrl);
         }
  
-        var response = await _authorizeResponseGenerator.CreateResponseAsync(request);
+        var response = await _authorizeResponseGenerator.CreateResponseAsync(request);   // <----------------------------------c2.1.
  
         await RaiseResponseEventAsync(response);
  
@@ -2004,7 +2274,295 @@ public class TestUserProfileService : IProfileService
     }
 }
 //---------------------------------Ʌ
+
+//-----------------------------V
+public class IdentityServerUser
+{
+    public string SubjectId { get; }
+    public string? DisplayName { get; set; }
+    public string? IdentityProvider { get; set; }
+    public string? Tenant { get; set; }
+    public ICollection<string> AuthenticationMethods { get; set; } = new HashSet<string>();
+    public DateTime? AuthenticationTime { get; set; }
+    public ICollection<Claim> AdditionalClaims { get; set; } = new HashSet<Claim>(new ClaimComparer());
+
+    public IdentityServerUser(string subjectId)
+    {
+        if (subjectId.IsMissing()) throw new ArgumentException("SubjectId is mandatory", nameof(subjectId));
+
+        SubjectId = subjectId;
+    }
+
+    public ClaimsPrincipal CreatePrincipal()   // <---------------------------------i5
+    {
+        if (SubjectId.IsMissing()) throw new ArgumentException("SubjectId is mandatory", nameof(SubjectId));
+        var claims = new List<Claim> { new Claim(JwtClaimTypes.Subject, SubjectId) };
+
+        if (DisplayName.IsPresent())
+            claims.Add(new Claim(JwtClaimTypes.Name, DisplayName!));
+
+        if (IdentityProvider.IsPresent())
+            claims.Add(new Claim(JwtClaimTypes.IdentityProvider, IdentityProvider!));
+            
+        if (Tenant.IsPresent())
+            claims.Add(new Claim(IdentityServerConstants.ClaimTypes.Tenant, Tenant!));
+
+        if (AuthenticationTime.HasValue)
+            claims.Add(new Claim(JwtClaimTypes.AuthenticationTime, new DateTimeOffset(AuthenticationTime.Value).ToUnixTimeSeconds().ToString()));
+
+        if (AuthenticationMethods.Any())
+        {
+            foreach (var amr in AuthenticationMethods)
+            {
+                claims.Add(new Claim(JwtClaimTypes.AuthenticationMethod, amr));
+            }
+        }
+
+        claims.AddRange(AdditionalClaims);
+
+        var id = new ClaimsIdentity(claims.Distinct(new ClaimComparer()), Constants.IdentityServerAuthenticationType, JwtClaimTypes.Name, JwtClaimTypes.Role);
+        return new ClaimsPrincipal(id);
+    }
+}
+//-----------------------------Ʌ
+
+//--------------------------V  // namespace Duende.IdentityServer.Endpoints.Results
+public class LoginPageResult
+{
+    public LoginPageResult(ValidatedAuthorizeRequest request, IdentityServerOptions options) 
+        : base(request, options.UserInteraction.LoginUrl, options.UserInteraction.LoginReturnUrlParameter)
+    {
+    }
+}
+//--------------------------Ʌ
+
+//--------------------------------------------------V
+public abstract class AuthorizeInteractionPageResult : EndpointResult<AuthorizeInteractionPageResult>
+{
+    public AuthorizeInteractionPageResult(ValidatedAuthorizeRequest request, string redirectUrl, string returnUrlParameterName)
+    {
+        Request = request ?? throw new ArgumentNullException(nameof(request));
+        RedirectUrl = redirectUrl ?? throw new ArgumentNullException(nameof(redirectUrl));
+        ReturnUrlParameterName = returnUrlParameterName ?? throw new ArgumentNullException(nameof(returnUrlParameterName));
+    }
+
+    public ValidatedAuthorizeRequest Request { get; }
+    public string RedirectUrl { get; }
+    public string ReturnUrlParameterName { get; }
+}
+
+class AuthorizeInteractionPageHttpWriter : IHttpResponseWriter<AuthorizeInteractionPageResult>
+{
+    private readonly IServerUrls _urls;
+    private readonly IAuthorizationParametersMessageStore _authorizationParametersMessageStore;
+
+    public AuthorizeInteractionPageHttpWriter(
+        IServerUrls urls,
+        IAuthorizationParametersMessageStore authorizationParametersMessageStore = null)
+    {
+        _urls = urls;
+        _authorizationParametersMessageStore = authorizationParametersMessageStore;
+    }
+
+    public async Task WriteHttpResponse(AuthorizeInteractionPageResult result, HttpContext context)
+    {
+        // returnUrl is "/connect/authorize/callback
+        var returnUrl = _urls.BasePath.EnsureTrailingSlash() + ProtocolRoutePaths.AuthorizeCallback;  // <--------------------------------------q2
+        // ...
+        url = url.AddQueryString(result.ReturnUrlParameterName, returnUrl);
+        context.Response.Redirect(_urls.GetAbsoluteUrl(url));
+    }
+}
+//--------------------------------------------------Ʌ
+
+//-------------------------------------V
+public abstract class EndpointResult<T> : IEndpointResult where T : class, IEndpointResult
+{
+    /// <inheritdoc/>
+    public async Task ExecuteAsync(HttpContext context)
+    {
+        var writer = context.RequestServices.GetService<IHttpResponseWriter<T>>();
+        if (writer != null)
+        {
+            T target = this as T;
+            if (target == null)
+            {
+                throw new Exception($"Type parameter {typeof(T)} must be the class derived from 'EndpointResult<T>'.");
+            }
+
+            await writer.WriteHttpResponse(target, context);
+        }
+        else
+        {
+            throw new Exception($"No IEndpointResultGenerator<T> registered for IEndpointResult type '{typeof(T)}'.");
+        }
+    }
+}
+//-------------------------------------Ʌ
 ```
+
+## Razor Page (created by template)
+
+```C#
+//----------------------------V
+[SecurityHeaders]
+[AllowAnonymous]
+public class Index : PageModel
+{
+    private readonly TestUserStore _users;
+    private readonly IIdentityServerInteractionService _interaction;
+    private readonly IEventService _events;
+    private readonly IAuthenticationSchemeProvider _schemeProvider;
+    private readonly IIdentityProviderStore _identityProviderStore;
+
+    public ViewModel View { get; set; } = default!;
+
+    [BindProperty]
+    public InputModel Input { get; set; } = default!;
+
+    public Index(
+        IIdentityServerInteractionService interaction,
+        IAuthenticationSchemeProvider schemeProvider,
+        IIdentityProviderStore identityProviderStore,
+        IEventService events,
+        TestUserStore? users = null)
+    {
+        // ...
+    }
+
+    public async Task<IActionResult> OnGet(string? returnUrl)  // <----------------------------- ReturnUrl is already "/connect/authorize/callback?client_id=xxxx"
+    {
+        await BuildModelAsync(returnUrl);
+            
+        if (View.IsExternalLoginOnly)
+        {
+            // we only have one option for logging in and it's an external provider
+            return RedirectToPage("/ExternalLogin/Challenge", new { scheme = View.ExternalLoginScheme, returnUrl });
+        }
+
+        return Page();
+    }
+        
+    public async Task<IActionResult> OnPost()  // <---------------------------------i5
+    {
+        var context = await _interaction.GetAuthorizationContextAsync(Input.ReturnUrl);  // ReturnUrl is "/connect/authorize/callback?client_id=xxxx"
+
+        // the user clicked the "cancel" button
+        if (Input.Button != "login")
+        {
+            if (context != null)
+            {             
+                await _interaction.DenyAuthorizationAsync(context, AuthorizationError.AccessDenied);
+
+                // we can trust model.ReturnUrl since GetAuthorizationContextAsync returned non-null
+                if (context.IsNativeClient())
+                {
+                    // The client is native, so this change in how to
+                    // return the response is for better UX for the end user.
+                    return this.LoadingPage(Input.ReturnUrl);
+                }
+
+                return Redirect(Input.ReturnUrl ?? "~/");
+            }
+            else
+            {
+                // since we don't have a valid context, then we just go back to the home page
+                return Redirect("~/");
+            }
+        }
+
+        if (ModelState.IsValid)
+        {
+            // validate username/password against in-memory store
+            if (_users.ValidateCredentials(Input.Username, Input.Password))
+            {
+                var user = _users.FindByUsername(Input.Username);
+                await _events.RaiseAsync(new UserLoginSuccessEvent(user.Username, user.SubjectId, user.Username, clientId: context?.Client.ClientId));
+                Telemetry.Metrics.UserLogin(context?.Client.ClientId, IdentityServerConstants.LocalIdentityProvider);
+
+                // only set explicit expiration here if user chooses "remember me". 
+                // otherwise we rely upon expiration configured in cookie middleware.
+                var props = new AuthenticationProperties();
+                if (LoginOptions.AllowRememberLogin && Input.RememberLogin)
+                {
+                    props.IsPersistent = true;
+                    props.ExpiresUtc = DateTimeOffset.UtcNow.Add(LoginOptions.RememberMeLoginDuration);
+                };
+
+                // issue authentication cookie with subject ID and username
+                var isuser = new IdentityServerUser(user.SubjectId)
+                {
+                    DisplayName = user.Username
+                };
+
+                await HttpContext.SignInAsync(isuser, props);   // <-----------------------------i5
+
+                if (context != null)
+                {
+                    // This "can't happen", because if the ReturnUrl was null, then the context would be null
+                    ArgumentNullException.ThrowIfNull(Input.ReturnUrl, nameof(Input.ReturnUrl));
+
+                    if (context.IsNativeClient())
+                    {
+                        // The client is native, so this change in how to
+                        // return the response is for better UX for the end user.
+                        return this.LoadingPage(Input.ReturnUrl);
+                    }
+
+                    /* Input.ReturnUrl is
+                    /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=0RPBpTHdTI26Nq-ylPLyeMnOQpVRvM914JxZhVaXFEw&code_challenge_method=S256&response_mode=form_post&nonce=638575024813670890.ZDdjNWYyZTMtZjgyNC00YjU3LWJiNjQtNGEyZDYxNm3N2U4OTdmNmY0NDItZWQ1Zi00YzBlLTk5NmMtM2FiNWUzNGVjZGFj&state=CfDJ8Fr2n1UxboNJlI8uHVA4skr-GSu4CL-Ite2zMgzmUDV0hJbvWGe-EOcojQhDhDKVg8Yr-8f4bdwQCCvPXVwjof6NzqM0X2Xuna-hOczCNqlW1gvRYZYlgLcLQzvWGJrIevwgI5WSXbhV31ZioZO92BhHh-6F21M2dZ7gp_uFX0HL8vGiaKJmiOmNmFQogOmt4pK2RjhPFRzBQmkuvPe7iMtBwp_qEeVFRTNd6k0r5xzFAinPR-c4FefjQqui9YJbolD6mTfNLr-VMHOtrVkl1VF3lzuqg2rm-4f3NtABGjWQMbYw0MqlZE9dglgHBFZU97rW9eBQ50IZXiAT5-q9EA-_-vXNrQPKETDAOpFE5A2x2lPlHvHC3m3cmSMN1TUA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
+                    */
+                    return Redirect(Input.ReturnUrl ?? "~/");  // <-----------------------------i5.
+                }
+
+                // request for a local page
+                if (Url.IsLocalUrl(Input.ReturnUrl))
+                {
+                    return Redirect(Input.ReturnUrl);
+                }
+                else if (string.IsNullOrEmpty(Input.ReturnUrl))
+                {
+                    return Redirect("~/");
+                }
+                else
+                {
+                    // user might have clicked on a malicious link - should be logged
+                    throw new ArgumentException("invalid return URL");
+                }
+            }
+
+            const string error = "invalid credentials";
+            await _events.RaiseAsync(new UserLoginFailureEvent(Input.Username, error, clientId:context?.Client.ClientId));
+            Telemetry.Metrics.UserLoginFailure(context?.Client.ClientId, IdentityServerConstants.LocalIdentityProvider, error);
+            ModelState.AddModelError(string.Empty, LoginOptions.InvalidCredentialsErrorMessage);
+        }
+
+        // something went wrong, show form with error
+        await BuildModelAsync(Input.ReturnUrl);
+        return Page();
+    }
+
+    private async Task BuildModelAsync(string? returnUrl) {}
+}
+//----------------------------Ʌ
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ## Helpers
@@ -2109,6 +2667,18 @@ internal class Decorator<TService, TImpl> : Decorator<TService> where TImpl : cl
     public Decorator(TImpl instance) : base(instance) { }
 }
 ```
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
