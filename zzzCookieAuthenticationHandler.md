@@ -56,7 +56,7 @@ public class SignInModel : PageModel    // this is the "/signin" razor page for 
         Claim claim = new Claim(ClaimTypes.Name, username);
         ClaimsIdentity ident = new ClaimsIdentity("simpleform");
         ident.AddClaim(claim);
-		await HttpContext.SignInAsync(new ClaimsPrincipal(ident));
+		  await HttpContext.SignInAsync(new ClaimsPrincipal(ident));
         return Redirect(returnUrl ?? "/signin");   // <-------------no need to redirect manually, CookieAuthenticationHandler does it automatically for you, check ApplyHeaders method
     }
 	*/
@@ -485,7 +485,7 @@ public class CookieAuthenticationHandler : SignInAuthenticationHandler<CookieAut
  
       // Only honor the ReturnUrl query string parameter on the login path
       var shouldHonorReturnUrlParameter = Options.LoginPath.HasValue && OriginalPath == Options.LoginPath;
-      await ApplyHeaders(shouldRedirect: true, shouldHonorReturnUrlParameter, signedInContext.Properties);
+      await ApplyHeaders(shouldRedirect: true, shouldHonorReturnUrlParameter, signedInContext.Properties);  // <-------ApplyHeaders will do the redirection based on if redirectUri is null
  
       Logger.AuthenticationSchemeSignedIn(Scheme.Name);
    }   

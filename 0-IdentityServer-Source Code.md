@@ -37,7 +37,7 @@ public class Program
 
 
 * How does `.well-known/openid-configuration` or `/connect/authorize` response (`/Account/Login` page) get generated? Inside `IdentityServerMiddleware` q1, q2
-* How does `/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=C65uIECsHI4&code_challenge_method=S256XXX` request get handled? (o1-)
+* How does `/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=C65uIECsHI4&code_challenge_method=S256XXX` request get handled? (c flag)
 
 =====================================================================================================================
 
@@ -458,13 +458,13 @@ public class IdentityServerMiddleware
             var endpoint = router.Find(context);   // <-----------------------a1.1, q1
             if (endpoint != null)
             { 
-                var result = await endpoint.ProcessAsync(context);  // <--------------------a1.2
+                var result = await endpoint.ProcessAsync(context);  // <--------------------a1.2, c3.1
  
                 if (result != null)
                 {
-                    await result.ExecuteAsync(context);  // <--------------------a1.3, q1, q2               
+                    await result.ExecuteAsync(context);  // <--------------------a1.3, q1, q2, c3.2               
                     // result is from abastract Duende.IdentityServer.Endpoints.Results.AuthorizeInteractionPageResult
-                    // and it can be e.g Duende.IdentityServer.Endpoints.Results.LoginPageResult
+                    // and it can be e.g Duende.IdentityServer.Endpoints.Results.LoginPageResult or AuthorizeResult (c3.1)
                     // ExecuteAsync will do a redirect to users with corrsponding Razor page
                 }
  
@@ -582,15 +582,15 @@ internal class AuthorizeEndpoint : AuthorizeEndpointBase
         }
 
         var user = await UserSession.GetUserAsync();
-
-        /* result is Duende.IdentityServer.Endpoints.Results.LoginPageResult        
+    
+        var result = await ProcessAuthorizeRequestAsync(values, user);   // <--------------------------------------q2
+         /* result is Duende.IdentityServer.Endpoints.Results.LoginPageResult        
          { 
-            RedirectUrl = "/Account/Login" 
+            RedirectUrl = "/Account/Login" // <---------------------------------------redirect users to the corresponding Razor pages
             Request = {Duende.IdentityServer.Validation.ValidatedAuthorizeRequest}
             ReturnUrlParameterName = "ReturnUrl"
          }
         */
-        var result = await ProcessAuthorizeRequestAsync(values, user);   // <--------------------------------------q2
 
         Logger.LogTrace("End authorize request. result type: {0}", result?.GetType().ToString() ?? "-none-");
 
@@ -636,13 +636,13 @@ internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
            {
               AccessToken = null
               AccessTokenLifetime = 0
-              Code = "CFDB61434AA087352A27D8A743C81F544C0CBDB3E674AC6FFA7E0AE92FDFD967-1"
+              Code = "CFDB61434AA087352A7D8A743C81F544C0CBDB3E674AC6FFA7E0AE92FDFD967-1"
               IdentityToken = null
               Issuer = "https://localhost:5001"
               RedirectUri = "https://localhost:7184/signin-oidc"
               Request = {Duende.IdentityServer.Validation.ValidatedAuthorizeRequest}
               Scope = "openid profile"
-              SessionState = "0A1p6zn4hcizfpMeipQE3EgmOavZyi6IKFORo1D_UY.90C2D968BDBEBFFD7839BD0AEA5E74CE"
+              SessionState = "0A1p6zn4hcizfpMeipQE3EgmOavZyi6IKFOR1D_UY.90CD968BDBEBFFD7839BD0AEA5E74CE"
               State = "CfDJ8Fr2n1UxboNJlI8uHVA4skobbheKboVu0uc-Sw82YrXv0FSfGKT7h0rLyCJv18oA_-76qioJpUgqSBOy64XArrHcs_bRqkg1q7ZSkFLeT..."
            }
         */
@@ -683,13 +683,13 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
         Events = events;
     }
 
-    public virtual async Task<AuthorizeResponse> CreateResponseAsync(ValidatedAuthorizeRequest request)   // <----------------------c3.0
+    public virtual async Task<AuthorizeResponse> CreateResponseAsync(ValidatedAuthorizeRequest request)   // <----------------------c2.2
     {
         using var activity = Tracing.BasicActivitySource.StartActivity("AuthorizeResponseGenerator.CreateResponse");
 
         if (request.GrantType == GrantType.AuthorizationCode)
         {
-            return await CreateCodeFlowResponseAsync(request);   // <----------------------c3.1
+            return await CreateCodeFlowResponseAsync(request);   // <----------------------c2.3
         }
         if (request.GrantType == GrantType.Implicit)
         {
@@ -717,11 +717,11 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
         return response;
     }
 
-    protected virtual async Task<AuthorizeResponse> CreateCodeFlowResponseAsync(ValidatedAuthorizeRequest request)  // <----------------------c3.2
+    protected virtual async Task<AuthorizeResponse> CreateCodeFlowResponseAsync(ValidatedAuthorizeRequest request)  // <----------------------c2.4
     {
         Logger.LogDebug("Creating Authorization Code Flow response.");
 
-        var code = await CreateCodeAsync(request);  // <----------------------c3.2
+        var code = await CreateCodeAsync(request);  // <----------------------c2.5.
         var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);
 
         var response = new AuthorizeResponse
@@ -1487,7 +1487,23 @@ public static class AuthenticationManagerExtensions
         await context.SignInAsync(await context.GetCookieAuthenticationSchemeAsync(), user.CreatePrincipal(), properties);
     }
 
-    internal static async Task<string> GetCookieAuthenticationSchemeAsync(this HttpContext context) { ... }
+    internal static async Task<string> GetCookieAuthenticationSchemeAsync(this HttpContext context)
+    {
+        var options = context.RequestServices.GetRequiredService<IdentityServerOptions>();
+        if (options.Authentication.CookieAuthenticationScheme != null)
+        {
+            return options.Authentication.CookieAuthenticationScheme;
+        }
+
+        var schemes = context.RequestServices.GetRequiredService<IAuthenticationSchemeProvider>();
+        var scheme = await schemes.GetDefaultAuthenticateSchemeAsync();
+        if (scheme == null)
+        {
+            throw new InvalidOperationException("No DefaultAuthenticateScheme found or no CookieAuthenticationScheme configured on IdentityServerOptions.");
+        }
+
+        return scheme.Name;
+    }
 }
 //-------------------------------------------------Ʌ
 
@@ -1619,6 +1635,228 @@ internal class IdentityServerAuthenticationService : IAuthenticationService
     }
 }
 //------------------------------------------------Ʌ
+
+//--------------------------->>
+public interface IUserSession
+{
+    Task<string> CreateSessionIdAsync(ClaimsPrincipal principal, AuthenticationProperties properties);
+    Task<ClaimsPrincipal?> GetUserAsync();
+    Task<string?> GetSessionIdAsync();
+    Task EnsureSessionIdCookieAsync();
+    Task RemoveSessionIdCookieAsync();
+    Task AddClientIdAsync(string clientId);
+    Task<IEnumerable<string>> GetClientListAsync();
+}
+//---------------------------<<
+
+//-----------------------------V
+public class DefaultUserSession : IUserSession
+{
+    protected readonly IHttpContextAccessor HttpContextAccessor;
+    protected readonly IAuthenticationHandlerProvider Handlers;
+    protected readonly IdentityServerOptions Options;
+    protected readonly IClock Clock;
+    protected readonly IServerUrls Urls;
+    protected readonly ILogger Logger;
+    protected HttpContext HttpContext => HttpContextAccessor.HttpContext;
+    protected string CheckSessionCookieName => Options.Authentication.CheckSessionCookieName;
+    protected string CheckSessionCookieDomain => Options.Authentication.CheckSessionCookieDomain;
+    protected SameSiteMode CheckSessionCookieSameSiteMode => Options.Authentication.CheckSessionCookieSameSiteMode;
+    protected ClaimsPrincipal Principal;
+    protected AuthenticationProperties Properties;
+
+    public DefaultUserSession(
+        IHttpContextAccessor httpContextAccessor,
+        IAuthenticationHandlerProvider handlers,
+        IdentityServerOptions options,
+        IClock clock,
+        IServerUrls urls,
+        ILogger<IUserSession> logger)
+    {
+        // ...
+    }
+
+    // we need this helper (and can't call HttpContext.AuthenticateAsync) so we don't run claims transformation when we get the principal. this also ensures that we don't
+    // re-issue a cookie that includes the claims from claims transformation. also, by caching the _principal/_properties it allows someone to issue a new
+    // cookie (via HttpContext.SignInAsync) and we'll use those new values, rather than just reading the incoming cookie  this design requires this to be in DI as scoped
+    protected virtual async Task AuthenticateAsync()
+    {
+        if (Principal == null || Properties == null)
+        {
+            var scheme = await HttpContext.GetCookieAuthenticationSchemeAsync();
+
+            var handler = await Handlers.GetHandlerAsync(HttpContext, scheme);
+            if (handler == null)
+            {
+                throw new InvalidOperationException($"No authentication handler is configured to authenticate for the scheme: {scheme}");
+            }
+
+            var result = await handler.AuthenticateAsync();
+            if (result != null && result.Succeeded && result.Principal.Identity.IsAuthenticated)
+            {
+                Principal = result.Principal;
+                Properties = result.Properties;
+            }
+        }
+    }
+
+    public virtual async Task<string> CreateSessionIdAsync(ClaimsPrincipal principal, AuthenticationProperties properties)
+    {
+        if (principal == null) throw new ArgumentNullException(nameof(principal));
+        if (properties == null) throw new ArgumentNullException(nameof(properties));
+
+        var currentSubjectId = (await GetUserAsync())?.GetSubjectId();
+        var newSubjectId = principal.GetSubjectId();
+
+        if (properties.GetSessionId() == null)
+        {
+            var currSid = await GetSessionIdAsync();
+            if (newSubjectId == currentSubjectId && currSid != null)
+            {
+                properties.SetSessionId(currSid);
+                var clients = Properties.GetClientList();
+                if (clients.Any())
+                {
+                    properties.SetClientList(clients);
+                }
+            }
+            else
+            {
+                properties.SetSessionId(CryptoRandom.CreateUniqueId(16, CryptoRandom.OutputFormat.Hex));
+            }
+        }
+
+        var sid = properties.GetSessionId();
+        IssueSessionIdCookie(sid);
+
+        Principal = principal;
+        Properties = properties;
+
+        return sid;
+    }
+
+    public virtual async Task<ClaimsPrincipal> GetUserAsync()
+    {
+        await AuthenticateAsync();
+
+        return Principal;
+    }
+
+    public virtual async Task<string> GetSessionIdAsync()
+    {
+        await AuthenticateAsync();
+
+        return Properties?.GetSessionId();
+    }
+
+    public virtual async Task EnsureSessionIdCookieAsync()
+    {
+        var sid = await GetSessionIdAsync();
+        if (sid != null)
+        {
+            IssueSessionIdCookie(sid);
+        }
+        else
+        {
+            await RemoveSessionIdCookieAsync();
+        }
+    }
+
+    public virtual Task RemoveSessionIdCookieAsync()
+    {
+        if (HttpContext.Request.Cookies.ContainsKey(CheckSessionCookieName))
+        {
+            // only remove it if we have it in the request
+            var options = CreateSessionIdCookieOptions();
+            options.Expires = Clock.UtcNow.UtcDateTime.AddYears(-1);
+
+            HttpContext.Response.Cookies.Append(CheckSessionCookieName, ".", options);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public virtual CookieOptions CreateSessionIdCookieOptions()
+    {
+        var secure = HttpContext.Request.IsHttps;
+        var path = Urls.BasePath.CleanUrlPath();
+
+        var options = new CookieOptions
+        {
+            HttpOnly = false,
+            Secure = secure,
+            Path = path,
+            IsEssential = true,
+            Domain = CheckSessionCookieDomain,
+            SameSite = CheckSessionCookieSameSiteMode
+        };
+
+        return options;
+    }
+
+    public virtual void IssueSessionIdCookie(string sid)
+    {
+        if (Options.Endpoints.EnableCheckSessionEndpoint)
+        {
+            if (HttpContext.Request.Cookies[CheckSessionCookieName] != sid)
+            {
+                HttpContext.Response.Cookies.Append(
+                    Options.Authentication.CheckSessionCookieName,
+                    sid,
+                    CreateSessionIdCookieOptions());
+            }
+        }
+    }
+
+    public virtual async Task AddClientIdAsync(string clientId)  // <--------------------------------c3.4
+    {
+        if (clientId == null) throw new ArgumentNullException(nameof(clientId));
+
+        await AuthenticateAsync();
+        if (Properties != null)
+        {
+            var clientIds = Properties.GetClientList();
+            if (!clientIds.Contains(clientId))
+            {
+                Properties.AddClientId(clientId);
+                await UpdateSessionCookie();  // <--------------------------------c3.4
+            }
+        }
+    }
+
+    public virtual async Task<IEnumerable<string>> GetClientListAsync()
+    {
+        await AuthenticateAsync();
+
+        if (Properties != null)
+        {
+            try
+            {
+                return Properties.GetClientList();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Error decoding client list");
+                // clear so we don't keep failing
+                Properties.RemoveClientList();
+                await UpdateSessionCookie();
+            }
+        }
+
+        return Enumerable.Empty<string>();
+    }
+
+    private async Task UpdateSessionCookie()
+    {
+        await AuthenticateAsync();
+
+        if (Principal == null || Properties == null) throw new InvalidOperationException("User is not currently authenticated");
+
+        var scheme = await HttpContext.GetCookieAuthenticationSchemeAsync();
+        await HttpContext.SignInAsync(scheme, Principal, Properties);
+    }
+}
+//-----------------------------Ʌ
 
 //---------------------------------V
 public class TokenResponseGenerator : ITokenResponseGenerator
@@ -2018,12 +2256,12 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
             return new CustomRedirectResult(request, interactionResult.RedirectUrl);
         }
  
-        var response = await _authorizeResponseGenerator.CreateResponseAsync(request);   // <----------------------------------c2.1.
+        var response = await _authorizeResponseGenerator.CreateResponseAsync(request);   // <----------------------------------c2.1
  
         await RaiseResponseEventAsync(response);
  
  
-        return new AuthorizeResult(response);
+        return new AuthorizeResult(response);  // <----------------------------------c3.0
     }
 
     protected async Task<IEndpointResult> CreateErrorResultAsync(
@@ -2327,7 +2565,7 @@ public class IdentityServerUser
 //-----------------------------Ʌ
 
 //--------------------------V  // namespace Duende.IdentityServer.Endpoints.Results
-public class LoginPageResult
+public class LoginPageResult : AuthorizeInteractionPageResult
 {
     public LoginPageResult(ValidatedAuthorizeRequest request, IdentityServerOptions options) 
         : base(request, options.UserInteraction.LoginUrl, options.UserInteraction.LoginReturnUrlParameter)
@@ -2366,14 +2604,231 @@ class AuthorizeInteractionPageHttpWriter : IHttpResponseWriter<AuthorizeInteract
 
     public async Task WriteHttpResponse(AuthorizeInteractionPageResult result, HttpContext context)
     {
-        // returnUrl is "/connect/authorize/callback
-        var returnUrl = _urls.BasePath.EnsureTrailingSlash() + ProtocolRoutePaths.AuthorizeCallback;  // <--------------------------------------q2
-        // ...
-        url = url.AddQueryString(result.ReturnUrlParameterName, returnUrl);
-        context.Response.Redirect(_urls.GetAbsoluteUrl(url));
+        var returnUrl = _urls.BasePath.EnsureTrailingSlash() + ProtocolRoutePaths.AuthorizeCallback;
+
+        if (_authorizationParametersMessageStore != null)
+        {
+            returnUrl = returnUrl.AddQueryString(Constants.AuthorizationParamsStore.MessageStoreIdParameterName, id);
+        }
+        else
+        {
+            if (result.Request.PushedAuthorizationReferenceValue != null)
+            {
+                var requestUri = $"{PushedAuthorizationRequestUri}:{result.Request.PushedAuthorizationReferenceValue}";
+                returnUrl = returnUrl
+                    .AddQueryString(OidcConstants.AuthorizeRequest.RequestUri, requestUri)
+                    .AddQueryString(OidcConstants.AuthorizeRequest.ClientId, result.Request.ClientId);
+            } 
+            else
+            {
+                returnUrl = returnUrl.AddQueryString(result.Request.ToOptimizedQueryString());
+            }
+        }
+
+        var url = result.RedirectUrl;
+        if (!url.IsLocalUrl())
+        {
+            // this converts the relative redirect path to an absolute one if we're 
+            // redirecting to a different server
+            returnUrl = _urls.Origin + returnUrl;
+        }
+
+        url = url.AddQueryString(result.ReturnUrlParameterName, returnUrl);   // url is "/Account/Login",  returnUrl is "/connect/authorize/callbackxxxxxx
+        context.Response.Redirect(_urls.GetAbsoluteUrl(url));  // <--------------------------------------q2
     }
 }
 //--------------------------------------------------Ʌ
+
+//------------------------------------------------------------V
+public class AuthorizeResult : EndpointResult<AuthorizeResult>
+{
+    public AuthorizeResponse Response { get; }
+
+    public AuthorizeResult(AuthorizeResponse response)
+    {
+        Response = response ?? throw new ArgumentNullException(nameof(response));
+    }
+}
+
+public class AuthorizeHttpWriter : IHttpResponseWriter<AuthorizeResult>
+{
+    public AuthorizeHttpWriter(
+        IdentityServerOptions options,
+        IUserSession userSession,
+        IPushedAuthorizationService pushedAuthorizationService,
+        IMessageStore<ErrorMessage> errorMessageStore,
+        IServerUrls urls,
+        IClock clock)
+    {
+       // ...
+    }
+
+    private readonly IdentityServerOptions _options;
+    private readonly IUserSession _userSession;
+    private readonly IPushedAuthorizationService _pushedAuthorizationService;
+    private readonly IMessageStore<ErrorMessage> _errorMessageStore;
+    private readonly IServerUrls _urls;
+    private readonly IClock _clock;
+
+    public async Task WriteHttpResponse(AuthorizeResult result, HttpContext context)
+    {
+        await ConsumePushedAuthorizationRequest(result);
+
+        if (result.Response.IsError)
+        {
+            await ProcessErrorAsync(result.Response, context);
+        }
+        else
+        {
+            await ProcessResponseAsync(result.Response, context);  // <----------------------------c3.3
+        }
+    }
+
+    private async Task ConsumePushedAuthorizationRequest(AuthorizeResult result)
+    {
+        var referenceValue = result.Response?.Request?.PushedAuthorizationReferenceValue;
+        if(referenceValue.IsPresent())
+        {
+            await _pushedAuthorizationService.ConsumeAsync(referenceValue);
+        }
+    }
+
+    private async Task ProcessErrorAsync(AuthorizeResponse response, HttpContext context)
+    {
+        // these are the conditions where we can send a response back directly to the client, otherwise we're only showing the error UI
+        var isSafeError =
+            response.Error == OidcConstants.AuthorizeErrors.AccessDenied ||
+            response.Error == OidcConstants.AuthorizeErrors.AccountSelectionRequired ||
+            response.Error == OidcConstants.AuthorizeErrors.LoginRequired ||
+            response.Error == OidcConstants.AuthorizeErrors.ConsentRequired ||
+            response.Error == OidcConstants.AuthorizeErrors.InteractionRequired ||
+            response.Error == OidcConstants.AuthorizeErrors.TemporarilyUnavailable ||
+            response.Error == OidcConstants.AuthorizeErrors.UnmetAuthenticationRequirements;
+        if (isSafeError)
+        {
+            // this scenario we can return back to the client
+            await ProcessResponseAsync(response, context);
+        }
+        else
+        {
+            // we now know we must show error page
+            await RedirectToErrorPageAsync(response, context);
+        }
+    }
+
+    private async Task ProcessResponseAsync(AuthorizeResponse response, HttpContext context)
+    {
+        if (!response.IsError)
+        {
+            // success response -- track client authorization for sign-out
+            await _userSession.AddClientIdAsync(response.Request.ClientId);  // <----------------------------c3.4
+        }
+
+        await RenderAuthorizeResponseAsync(response, context);
+    }
+
+    private async Task RenderAuthorizeResponseAsync(AuthorizeResponse response, HttpContext context)
+    {
+        if (response.Request.ResponseMode == OidcConstants.ResponseModes.Query ||
+            response.Request.ResponseMode == OidcConstants.ResponseModes.Fragment)
+        {
+            context.Response.SetNoCache();
+            context.Response.Redirect(BuildRedirectUri(response));
+        }
+        else if (response.Request.ResponseMode == OidcConstants.ResponseModes.FormPost)
+        {
+            context.Response.SetNoCache();
+            AddSecurityHeaders(context);
+            await context.Response.WriteHtmlAsync(GetFormPostHtml(response));
+        }
+        else
+        {
+            throw new InvalidOperationException("Unsupported response mode");
+        }
+    }
+
+    private void AddSecurityHeaders(HttpContext context)
+    {
+        context.Response.AddScriptCspHeaders(_options.Csp, IdentityServerConstants.ContentSecurityPolicyHashes.AuthorizeScript);
+
+        var referrer_policy = "no-referrer";
+        if (!context.Response.Headers.ContainsKey("Referrer-Policy"))
+        {
+            context.Response.Headers.Append("Referrer-Policy", referrer_policy);
+        }
+    }
+
+    private string BuildRedirectUri(AuthorizeResponse response)
+    {
+        var uri = response.RedirectUri;
+        var query = response.ToNameValueCollection(_options).ToQueryString();
+
+        if (response.Request.ResponseMode == OidcConstants.ResponseModes.Query)
+        {
+            uri = uri.AddQueryString(query);
+        }
+        else
+        {
+            uri = uri.AddHashFragment(query);
+        }
+
+        if (response.IsError && !uri.Contains("#"))
+        {
+            // https://tools.ietf.org/html/draft-bradley-oauth-open-redirector-00
+            uri += "#_=_";
+        }
+
+        return uri;
+    }
+
+    private const string DefaultFormPostHeadTags = "<head><meta http-equiv='X-UA-Compatible' content='IE=edge' /><base target='_self'/></head>";
+    private const string DefaultFormPostBodyTags = "<body><form method='post' action='{uri}'>{body}<noscript><button>Click to continue</button></noscript></form><script>window.addEventListener('load', function(){document.forms[0].submit();});</script></body>";
+
+    protected virtual string FormPostHeader => DefaultFormPostHeadTags;
+    protected virtual string FormPostBody => DefaultFormPostBodyTags;
+
+    protected virtual string GetFormPostHtml(AuthorizeResponse response)
+    {
+        var html = $"<html>{FormPostHeader}{FormPostBody}</html>";
+
+        var url = response.Request.RedirectUri;
+        url = HtmlEncoder.Default.Encode(url);
+        html = html.Replace("{uri}", url);
+        html = html.Replace("{body}", response.ToNameValueCollection(_options).ToFormPost());
+
+        return html;
+    }
+
+    private async Task RedirectToErrorPageAsync(AuthorizeResponse response, HttpContext context)
+    {
+        var errorModel = new ErrorMessage
+        {
+            ActivityId = System.Diagnostics.Activity.Current?.Id,
+            RequestId = context.TraceIdentifier,
+            Error = response.Error,
+            ErrorDescription = response.ErrorDescription,
+            UiLocales = response.Request?.UiLocales,
+            DisplayMode = response.Request?.DisplayMode,
+            ClientId = response.Request?.ClientId
+        };
+
+        if (response.RedirectUri != null && response.Request?.ResponseMode != null)
+        {
+            // if we have a valid redirect uri, then include it to the error page
+            errorModel.RedirectUri = BuildRedirectUri(response);
+            errorModel.ResponseMode = response.Request.ResponseMode;
+        }
+
+        var message = new Message<ErrorMessage>(errorModel, _clock.UtcNow.UtcDateTime);
+        var id = await _errorMessageStore.WriteAsync(message);
+
+        var errorUrl = _options.UserInteraction.ErrorUrl;
+
+        var url = errorUrl.AddQueryString(_options.UserInteraction.ErrorIdParameter, id);
+        context.Response.Redirect(_urls.GetAbsoluteUrl(url));
+    }
+}
+//------------------------------------------------------------Ʌ
 
 //-------------------------------------V
 public abstract class EndpointResult<T> : IEndpointResult where T : class, IEndpointResult
@@ -2510,7 +2965,7 @@ public class Index : PageModel
                     }
 
                     /* Input.ReturnUrl is
-                    /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=0RPBpTHdTI26Nq-ylPLyeMnOQpVRvM914JxZhVaXFEw&code_challenge_method=S256&response_mode=form_post&nonce=638575024813670890.ZDdjNWYyZTMtZjgyNC00YjU3LWJiNjQtNGEyZDYxNm3N2U4OTdmNmY0NDItZWQ1Zi00YzBlLTk5NmMtM2FiNWUzNGVjZGFj&state=CfDJ8Fr2n1UxboNJlI8uHVA4skr-GSu4CL-Ite2zMgzmUDV0hJbvWGe-EOcojQhDhDKVg8Yr-8f4bdwQCCvPXVwjof6NzqM0X2Xuna-hOczCNqlW1gvRYZYlgLcLQzvWGJrIevwgI5WSXbhV31ZioZO92BhHh-6F21M2dZ7gp_uFX0HL8vGiaKJmiOmNmFQogOmt4pK2RjhPFRzBQmkuvPe7iMtBwp_qEeVFRTNd6k0r5xzFAinPR-c4FefjQqui9YJbolD6mTfNLr-VMHOtrVkl1VF3lzuqg2rm-4f3NtABGjWQMbYw0MqlZE9dglgHBFZU97rW9eBQ50IZXiAT5-q9EA-_-vXNrQPKETDAOpFE5A2x2lPlHvHC3m3cmSMN1TUA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
+                    /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=0RPBpTHdTI26Nq-ylPLyeMnOQpVRvM914JxZhVaXFEw&code_challenge_method=S256&response_mode=form_post&nonce=638575024813670890.ZDdjNWYyZTMtZjgyNC00YjU3LWJiNjQtNGEyZDYxNm3N2U4OTdmNmY0NDItZWQ1Zi00YzBlLTk5NmMtM2FiNWUzNGVjZGFj&state=CfDJ8Fr2n1UxboNJlI8uHVA4skr-GSu4CL-Ite2zMgzmUDV0hJbvWGe-EOcojQhDhDKVg8Yr-8f4bdwQCCvPXVwjof6NzqM0X2Xuna-hOczCNqlW1gvRYZYlgLcLQzvWGJrIevwgI5WSXbhV31ZioZO92BhHh-6F21M2dZ7gp_uFX0HL8vGiaKJmiOmNmFQogOmt4pK2RjhPFRzBQmkuvPe7iMtBwp_qEeVFRTNd6k0r5xzFAinPR-cFefjQqui9YJbolD6mTfNLr-VMHOtrVkl1VF3lzuqg2rm-4f3NtABGjWQMbYw0MqlZE9dglgHBFZU97rW9eBQ50IZXiAT5-q9EA-_-vXNrQPKETDAOpFE5A2x2lPlHvHCm3cmSMN1TUA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
                     */
                     return Redirect(Input.ReturnUrl ?? "~/");  // <-----------------------------i5.
                 }

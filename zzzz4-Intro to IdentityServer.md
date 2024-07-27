@@ -196,7 +196,9 @@ https://localhost:7184  (goes to ImageGallery.Client's GalleryController's Index
 
 
 1. `AuthenticationMiddleware` calls `AuthenticateAsync()`  
+
 2.  `AuthorizationMiddleware` calls default `ChallengeAsync()`
+
 3. `OpenIdConnectHandler.HandleChallengeAsync()`
 (a1) invoke `https://localhost:5001/.well-known/openid-configuration` and `https://localhost:5001/.well-known/openid-configuration/jwks`
 
@@ -208,7 +210,7 @@ https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_u
 ```
 
 4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware` handles it (q2 on IdentityServer4 Source Code)
-and redirect users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback` which flows from the Razor Page's `OnGet` to `OnPost` , the redirection request is below:
+and redirect users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost` , the redirection request is below:
 
 ```C#
 /*
@@ -216,7 +218,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-5. User enter credentials, trigger `/Account/Login` post back (i5), calls `HttpContext.SignInAsync("Cookie")` (so IdentityUser is transformed to ClaimsPrincipal then AuthenticationTicket is added into cookie), then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
+5. User enter credentials, trigger `/Account/Login` post back (i5), calls `HttpContext.SignInAsync("Cookie")` (so IdentityUser is transformed to ClaimsPrincipal which contains name claim such as "Emma", then AuthenticationTicket is added into cookie, but it will actually be wiped out later), then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
 
 ```C#
 /*
@@ -226,7 +228,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-6. `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request, then somehow (must be other middleware of IdentityServer) a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. Inside `IdentityServerMiddleware` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then somehow (must be other middleware of IdentityServer) a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -241,7 +243,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1), then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag)
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1), then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, note that we lose "user = Emma" claim in this process because we use IdToken to generate ClaimsIdentity again and this idToken doesn't contain user name for most of time unless we configure it to)
 
 
 

@@ -176,7 +176,7 @@ public class AuthenticationMiddleware
             
          if (handler != null && await handler.HandleRequestAsync())  // <------------------e1, for external auth service, check ExternalAuthHandler example in chapter23
          {
-            return;   // <----------------------note we want to return here and bypass all the following middlewares such as AuthorizationMiddleware 
+            return;   // <----------------------!important note we want to return here and bypass all the following middlewares such as AuthorizationMiddleware 
          }            // as HandleRequestAsync() normally does a redirection call such as Context.Response.Redirect(props.RedirectUri), check ExternalAuthHandler for more info
       }
       //
