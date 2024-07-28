@@ -146,26 +146,13 @@ Token Endpoint
 
 
 
-https://localhost:5005/connect/authorize/callback?client_id=movies_mvc_client&redirect_uri=https%3A%2F%2Flocalhost%3A5002%2Fsignin-oidc&response_type=code%20id_token&scope=openid
-%20profile%20movieAPI&response_mode=form_post&nonce=638572436742702887.YTVhYTA3OTMtYWQ3Yi00MmIyLThlNTQtODVhYzhiNmEyYzcyOWU5ODdkNDQtZWZiNC00ZjBhLWEyMDYtZjJhNDBjMjg1OTU1&state=CfDJ8Fr2n1UxboNJlI8uHVA4skrNR_vPZYZPCuMGC8-rmpTRJxoDiXGl1FJjnNdx_sIAagog-foJvbNnnra2GAVMbCr7qhJ0OtJ-xGZntDsohgabJGkdgfnrwUvmlTrZZKNouJuq4DMK-AWI-iN-eEYWo5tGxPFnHTnlgWcf86X3-k9dRQjAF71ZYX48Q2et1cQTHs0eSP2NK0vDFnYcTO8FcKpPp-vktyVsW79cFEEBoXTHPrU4l6TosBlubDnjAuoNJkK6Yd8mfQApOMxOCPXCA3nWwIEXVkNB0Eju8zOX3N41&x-client-SKU=ID_NETSTANDARD2_0&x-client-ver=6.10.0.0
-
-where is the access/id token in the above redirection url?
-
-
-Q1- .AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
-        {
-            options.SignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;  // <-----------?? to debug and see why this is needed
-        })
-
-
-
 
 
 ===========================================================================================
 
 ## Request Pipelines
 
-7184: Client  5001: IdentityServer  7075: Api
+`7184`: `Client`  `5001`: `IdentityServer`  `7075`: `Api` (note that Api doesn't use `[Authorize]` at all, it is clientApp should use Authorize attribute)
 
 ```C#
 public class ClientProgram  // https://localhost:7184
@@ -209,8 +196,8 @@ https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_u
 */
 ```
 
-4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware` handles it (q2 on IdentityServer4 Source Code)
-and redirect users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost` , the redirection request is below:
+4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware`'s `AuthorizeEndpoint` handles it (q2 on IdentityServer4 Source Code)
+and `AuthorizeEndpoint` redirects users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost` , the redirection request is below:
 
 ```C#
 /*
@@ -218,7 +205,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-5. User enter credentials, trigger `/Account/Login` post back (i5), calls `HttpContext.SignInAsync("Cookie")` (so IdentityUser is transformed to ClaimsPrincipal which contains name claim such as "Emma", then AuthenticationTicket is added into cookie, but it will actually be wiped out later), then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
+5. User enter credentials, trigger `/Account/Login` post back to IdentityServer (i5), calls `HttpContext.SignInAsync("Cookie")` to **create user-to-idp cookie** (compared to Client calls SignInAsync in step 7, so there will be two cookies, one from user to client, and one from user to IdentityServer) so IdentityUser is transformed to ClaimsPrincipal which contains name claim such as "Emma", then AuthenticationTicket is added into cookie, then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
 
 ```C#
 /*
@@ -228,7 +215,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-6. Inside `IdentityServerMiddleware` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then somehow (must be other middleware of IdentityServer) a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. Inside `IdentityServerMiddleware` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -243,7 +230,52 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1), then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, note that we lose "user = Emma" claim in this process because we use IdToken to generate ClaimsIdentity again and this idToken doesn't contain user name for most of time unless we configure it to)
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called (o3.2) to get access token and id token), also note that we lose "user = Emma" claim in this process because we use IdToken to generate ClaimsIdentity again and this idToken doesn't contain user name for most of time unless we configure it to. Finally, **Client calls `Context.SignInAsync()` to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
+
+Important thing to know, in the subsequent requst, only **user-to-client** cookie is needed for user to be authenticated, however if you develop logout functionality by only sign out this 
+user-to-client cooke, it will have issue shows below.
+
+8. A-Prerequisite knowledge for SignOut functionality , you have to do:
+
+```C#
+public class AuthenticationController : Controller
+{
+    [Authorize]
+    public async Task Logout()
+    {
+        // clears the local cookie
+        await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+        // clear IDP own session/cookie
+        await HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme); // <----------don't forget to call this one
+    }
+}
+```
+
+`HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme)` trigger below request (s flag):
+
+```C#
+/*
+https://localhost:5001/connect/endsession?post_logout_redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignout-callback-oidc&id_token_hint=eyJhbGciOiJSUzxxxx
+*/
+```
+
+and let's say you didn't clear IDP cookie, and after user click logout and request the resource again, at p1, the user is from IDP cookie, and at P2, it won't be `LoginPageResult` but `AuthorizeResult` (that's why users won't be showed with Login page again), then it just repeats step 6, 7, then user is still seems to be login
+
+A special note on the "user-to-idp cookie" and "user-to-client" cookie. the former is created first on the IdentityServer's end i.e Login page, so the claims will be the data on the signin form (especially the "user = Emma" claim which probably won't be in id token). "user-to-client" cookie however it is created based on id token from idp.
+
+So if you don't clear IDP own session/cookie, and request the resource, resource will be returned to your with no 401 error (bug), behind the scene`AuthorizationMiddleware` calls `OpenIdConnectHandler.HandleChallengeAsync()` to repeat the communication to idp, after  `https://localhost:7184/signin-oidc` is handled by client, Client calls `Context.SignInAsync()` again. If you request the reousrce again,  resource will be returned to you (still a bug), and this time `OpenIdConnectHandler.HandleChallengeAsync()` won't be called
+
+
+8. B-Signout process
+
+`https://localhost:5001/connect/endsession` is triggered (sot flag in `OpenIdConnectHandler.SignOutAsync()`),
+
+```C#
+/*  token_hint is the id token
+https://localhost:5001/connect/endsession?post_logout_redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignout-callback-oidc&id_token_hint=eyJhbGciOiJSUzI1Nxxxx
+*/
+```
 
 
 
@@ -251,19 +283,9 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 
 
 
-While GalleryController.Index is hiting the breakpoint when url is above? why?
-
-then recirect to https://localhost:7184   ?  but identityToken is null why?
 
 
 
-
-
-
-
-`CookieAuthenticationHandler.HandleAuthenticateAsync()`
-
-`AuthenticationService.AuthenticateAsync()`
 
 ==========================================================================================
 
@@ -570,7 +592,7 @@ public class ClientProgram
         /*
 
          {
-           "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjhFNjFCRTk2NEFCQUM5NkVEMDU2RDQ5M0RCODQ3M0E2IiwidHlwIjoiYXQrand0In0.eyJpc3MiOiJodHRwczovL2xvY2FsaG9zdDo1MDAxIiwibmJmIjoxNzIwNjE5MjczLCJpYXQiOjE3MjA2MTkyNzMsImV4cCI6MTcyMDYyMjg3Mywic2NvcGUiOlsiYXBpMSJdLCJjbGllbnRfaWQiOiJjbGllbnQiLCJqdGkiOiI4NTBEODIzNUFCRTVERkQwQTJFOTE3MjEyODFDNzE1QyJ9.TPF3XuEpz-HgkIAxpsXKzRBZcyALNiQsK_cCBYHV-qrEiND0zZm7wffqUEXr3OeCNU0uiF06Fs3IBAGcNW6nLCp7vHDi-zCidqD8hTGg1tUCxOzDttltzcDF7CyvK81ZaJUb-KOz1Pivi8GfmKcFeV8hK_UfFSPjqh8BAQtQlbyJCdK2eYFbML3lcujzFDtitP4v5kpq3B6m_cx9xnOQ3fUK2Q8ve7f7DZgWLM51dwkyu11nWliRRcZQBsu5GT9EhmqTiB69y8PsV6mAYbhSb5BKN0YelV2RU5G89wVYoxQPYvNUP5TDOdI-XEgRX2mKYMKy_Ilf60q_KkqAGgilHQ",
+           "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjhFNjFCRTk2NEFCQUM5NkVEMDU2RDQ5M0RCODQ3M0E2IiwidHlwIjoiYXQrand0In0.eyJpcMiOiJodHRwczovL2xvY2FsaG9zdDo1MDAxIiwibmJmIjoxNzIwNjE5MjczLCJpYXQiOjE3MjA2MTkyNzMsImV4cCI6MTcyMDYyMjg3Mywic2NvcGUiOlsiYXBpMSJdLCJjbGllbnRfaWQiOiJjbGllbnQiLCJqdGkiOiI4NTBEODIzNUFCRTVERkQwQTJFOTE3MjEyODFDNzE1QyJ9.TPF3XuEpz-HgkIAxpsXKzRBZcyALNiQsK_cCBYHV-qrEiND0zZm7wffqUEXr3OeCNU0uiF06Fs3IBAGcNW6nLCp7vHDi-zCidqD8hTGg1tUCxOzDttltzcDF7CyvK81ZaJUb-KOz1Pivi8GfmKcFeV8hK_UfFSPjqh8BAQtQlbyJCdK2eYFbML3lcujzFDtitP4v5kpq3B6m_cx9xnOQ3fUK2Q8ve7f7DZgWLM51dwkyu11nWliRRcZQBsu5GT9EhmqTiB69y8PsV6mAYbhSb5BKN0YelV2RU5G89wVYoxQPYvNUP5TDOdI-XEgRX2mKYMKy_Ilf60q_KkqAGgilHQ",
            "expires_in": 3600,
            "token_type": "Bearer",
            "scope": "api1"           

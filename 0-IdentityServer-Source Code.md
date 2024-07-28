@@ -37,7 +37,7 @@ public class Program
 
 
 * How does `.well-known/openid-configuration` or `/connect/authorize` response (`/Account/Login` page) get generated? Inside `IdentityServerMiddleware` q1, q2
-* How does `/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=C65uIECsHI4&code_challenge_method=S256XXX` request get handled? (c flag)
+* How does `/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=C65uIECsH4&code_challenge_method=S256XXX` request get handled? (c flag)
 
 =====================================================================================================================
 
@@ -221,7 +221,7 @@ public static class IdentityServerBuilderExtensionsCore
  
         builder.Services.AddSingleton<IConfigureOptions<CookieAuthenticationOptions>, ConfigureInternalCookieOptions>();
         builder.Services.AddSingleton<IPostConfigureOptions<CookieAuthenticationOptions>, PostConfigureInternalCookieOptions>();
-        builder.Services.AddTransientDecorator<IAuthenticationService, IdentityServerAuthenticationService>();
+        builder.Services.AddTransientDecorator<IAuthenticationService, IdentityServerAuthenticationService>();  // <---------this decorate original asp.net's AuthenticationService
         builder.Services.AddTransientDecorator<IAuthenticationHandlerProvider, FederatedSignoutAuthenticationHandlerProvider>();
  
         return builder;
@@ -237,7 +237,7 @@ public static class IdentityServerBuilderExtensionsCore
         builder.AddEndpoint<DeviceAuthorizationEndpoint>(EndpointNames.DeviceAuthorization, ProtocolRoutePaths.DeviceAuthorization.EnsureLeadingSlash());
         builder.AddEndpoint<DiscoveryKeyEndpoint>(EndpointNames.Discovery, ProtocolRoutePaths.DiscoveryWebKeys.EnsureLeadingSlash());
         builder.AddEndpoint<DiscoveryEndpoint>(EndpointNames.Discovery, ProtocolRoutePaths.DiscoveryConfiguration.EnsureLeadingSlash());  // <---------------q1
-        builder.AddEndpoint<EndSessionCallbackEndpoint>(EndpointNames.EndSession, ProtocolRoutePaths.EndSessionCallback.EnsureLeadingSlash());
+        builder.AddEndpoint<EndSessionCallbackEndpoint>(EndpointNames.EndSession, ProtocolRoutePaths.EndSessionCallback.EnsureLeadingSlash());  //<----------so
         builder.AddEndpoint<EndSessionEndpoint>(EndpointNames.EndSession, ProtocolRoutePaths.EndSession.EnsureLeadingSlash());
         builder.AddEndpoint<IntrospectionEndpoint>(EndpointNames.Introspection, ProtocolRoutePaths.Introspection.EnsureLeadingSlash());
         builder.AddEndpoint<TokenRevocationEndpoint>(EndpointNames.Revocation, ProtocolRoutePaths.Revocation.EnsureLeadingSlash());
@@ -420,6 +420,97 @@ public static class IdentityServerBuilderExtensions
 }
 //-------------------------------------------------Ʌ
 
+//----------------------------------------------------V
+public static class AuthenticationPropertiesExtensions
+{
+    internal const string SessionIdKey = "session_id";
+    internal const string ClientListKey = "client_list";
+
+    public static string GetSessionId(this AuthenticationProperties properties)
+    {
+        if (properties?.Items.ContainsKey(SessionIdKey) == true)
+        {
+            return properties.Items[SessionIdKey];
+        }
+
+        return null;
+    }
+
+    public static void SetSessionId(this AuthenticationProperties properties, string sid)
+    {
+        properties.Items[SessionIdKey] = sid;
+    }
+
+    public static IEnumerable<string> GetClientList(this AuthenticationProperties properties)
+    {
+        if (properties?.Items.ContainsKey(ClientListKey) == true)
+        {
+            var value = properties.Items[ClientListKey];
+            return DecodeList(value);
+        }
+
+        return Enumerable.Empty<string>();
+    }
+
+    public static void RemoveClientList(this AuthenticationProperties properties)
+    {
+        properties?.Items.Remove(ClientListKey);
+    }
+
+    public static void SetClientList(this AuthenticationProperties properties, IEnumerable<string> clientIds)
+    {
+        var value = EncodeList(clientIds);
+        if (value == null)
+        {
+            properties.Items.Remove(ClientListKey);
+        }
+        else
+        {
+            properties.Items[ClientListKey] = value;
+        }
+    }
+
+    public static void AddClientId(this AuthenticationProperties properties, string clientId)
+    {
+        if (clientId == null) throw new ArgumentNullException(nameof(clientId));
+
+        var clients = properties.GetClientList();
+        if (!clients.Contains(clientId))
+        {
+            var update = clients.ToList();
+            update.Add(clientId);
+                
+            properties.SetClientList(update);
+        }
+    }
+
+    private static IEnumerable<string> DecodeList(string value)
+    {
+        if (value.IsPresent())
+        {
+            var bytes = Base64Url.Decode(value);
+            value = Encoding.UTF8.GetString(bytes);
+            return ObjectSerializer.FromString<string[]>(value);
+        }
+
+        return Enumerable.Empty<string>();
+    }
+
+    private static string EncodeList(IEnumerable<string> list)
+    {
+        if (list != null && list.Any())
+        {
+            var value = ObjectSerializer.ToString(list);
+            var bytes = Encoding.UTF8.GetBytes(value);
+            value = Base64Url.Encode(bytes);
+            return value;
+        }
+
+        return null;
+    }
+}
+//----------------------------------------------------Ʌ
+
 //-----------------------------------V
 public class IdentityServerMiddleware
 {
@@ -462,7 +553,7 @@ public class IdentityServerMiddleware
  
                 if (result != null)
                 {
-                    await result.ExecuteAsync(context);  // <--------------------a1.3, q1, q2, c3.2               
+                    await result.ExecuteAsync(context);  // <--------------------a1.3, q1, q2, c3.2, p2         
                     // result is from abastract Duende.IdentityServer.Endpoints.Results.AuthorizeInteractionPageResult
                     // and it can be e.g Duende.IdentityServer.Endpoints.Results.LoginPageResult or AuthorizeResult (c3.1)
                     // ExecuteAsync will do a redirect to users with corrsponding Razor page
@@ -581,15 +672,15 @@ internal class AuthorizeEndpoint : AuthorizeEndpointBase
             return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
         }
 
-        var user = await UserSession.GetUserAsync();
+        var user = await UserSession.GetUserAsync();  // <---------------------------------------p1, ask CookieAuthenticationHandler to user from ticket
     
-        var result = await ProcessAuthorizeRequestAsync(values, user);   // <--------------------------------------q2
-         /* result is Duende.IdentityServer.Endpoints.Results.LoginPageResult        
-         { 
-            RedirectUrl = "/Account/Login" // <---------------------------------------redirect users to the corresponding Razor pages
-            Request = {Duende.IdentityServer.Validation.ValidatedAuthorizeRequest}
-            ReturnUrlParameterName = "ReturnUrl"
-         }
+        var result = await ProcessAuthorizeRequestAsync(values, user);   // <--------------------------------------q2, p2
+        /* result is Duende.IdentityServer.Endpoints.Results.LoginPageResult        
+        { 
+          RedirectUrl = "/Account/Login" // <---------------------------------------redirect users to the corresponding Razor pages
+          Request = {Duende.IdentityServer.Validation.ValidatedAuthorizeRequest}
+          ReturnUrlParameterName = "ReturnUrl"
+        }
         */
 
         Logger.LogTrace("End authorize request. result type: {0}", result?.GetType().ToString() ?? "-none-");
@@ -844,6 +935,420 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
         };
 
         return code;
+    }
+}
+//-------------------------------------Ʌ
+
+//-------------------------------V
+internal class EndSessionEndpoint : IEndpointHandler
+{
+    private readonly IEndSessionRequestValidator _endSessionRequestValidator;
+
+    private readonly ILogger _logger;
+
+    private readonly IUserSession _userSession;
+
+    public EndSessionEndpoint(
+        IEndSessionRequestValidator endSessionRequestValidator,
+        IUserSession userSession,
+        ILogger<EndSessionEndpoint> logger)
+    {
+        // ...
+    }
+
+    public async Task<IEndpointResult> ProcessAsync(HttpContext context)  // <---------------------------e0
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.EndSession + "Endpoint");
+
+        try
+        {
+            return await ProcessEndSessionAsync(context);
+        }
+        catch (InvalidDataException ex)
+        {
+            _logger.LogWarning(ex, "Invalid HTTP request for end session endpoint");
+            return new StatusCodeResult(HttpStatusCode.BadRequest);
+        }
+    }
+
+    async Task<IEndpointResult> ProcessEndSessionAsync(HttpContext context)  // <---------------------------e1
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.EndSession + "Endpoint");
+
+        NameValueCollection parameters;
+        if (HttpMethods.IsGet(context.Request.Method))
+        {
+            parameters = context.Request.Query.AsNameValueCollection();
+        }
+        else if (HttpMethods.IsPost(context.Request.Method))
+        {
+            parameters = (await context.Request.ReadFormAsync()).AsNameValueCollection();
+        }
+        else
+        {
+            _logger.LogWarning("Invalid HTTP method for end session endpoint.");
+            return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
+        }
+
+        var user = await _userSession.GetUserAsync();
+
+        _logger.LogDebug("Processing signout request for {subjectId}", user?.GetSubjectId() ?? "anonymous");
+
+        var result = await _endSessionRequestValidator.ValidateAsync(parameters, user);
+
+        if (result.IsError)
+            _logger.LogError("Error processing end session request {error}", result.Error);
+        else
+            _logger.LogDebug("Success validating end session request from {clientId}", result.ValidatedRequest?.Client?.ClientId);
+
+        return new EndSessionResult(result);
+    }
+}
+//-------------------------------Ʌ
+
+//---------------------------V
+public class EndSessionResult : EndpointResult<EndSessionResult>
+{
+    public EndSessionValidationResult Result { get; }
+
+    public EndSessionResult(EndSessionValidationResult result)
+    {
+        Result = result ?? throw new ArgumentNullException(nameof(result));
+    }
+}
+
+class EndSessionHttpWriter : IHttpResponseWriter<EndSessionResult>
+{
+    public EndSessionHttpWriter(
+        IdentityServerOptions options,
+        IClock clock,
+        IServerUrls urls,
+        IMessageStore<LogoutMessage> logoutMessageStore)
+    {
+        _options = options;
+        _clock = clock;
+        _urls = urls;
+        _logoutMessageStore = logoutMessageStore;
+    }
+
+    private IdentityServerOptions _options;
+    private IClock _clock;
+    private IServerUrls _urls;
+    private IMessageStore<LogoutMessage> _logoutMessageStore;
+
+    public async Task WriteHttpResponse(EndSessionResult result, HttpContext context)
+    {
+        var validatedRequest = result.Result.IsError ? null : result.Result.ValidatedRequest;
+
+        string id = null;
+
+        if (validatedRequest != null)
+        {
+            var logoutMessage = new LogoutMessage(validatedRequest);
+            if (logoutMessage.ContainsPayload)
+            {
+                var msg = new Message<LogoutMessage>(logoutMessage, _clock.UtcNow.UtcDateTime);
+                id = await _logoutMessageStore.WriteAsync(msg);
+            }
+        }
+
+        var redirect = _options.UserInteraction.LogoutUrl;  // redirect is "/Account/Logout" here
+
+        if (redirect.IsLocalUrl())
+        {
+            redirect = _urls.GetIdentityServerRelativeUrl(redirect);  // redirect is "https://localhost:5001/Account/Logout" here
+        }
+
+        if (id != null)
+        {
+            redirect = redirect.AddQueryString(_options.UserInteraction.LogoutIdParameter, id);  
+            // redirect is https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053fXDUzUXvku1K6jgfyhhxxx here
+        }
+
+        context.Response.Redirect(redirect);
+    }
+}
+//---------------------------Ʌ
+
+//---------------------------------------V
+internal class EndSessionCallbackEndpoint : IEndpointHandler  // handles /connect/endsession/callback
+{
+    private readonly IEndSessionRequestValidator _endSessionRequestValidator;
+    private readonly ILogger _logger;
+
+    public EndSessionCallbackEndpoint(
+        IEndSessionRequestValidator endSessionRequestValidator,
+        ILogger<EndSessionCallbackEndpoint> logger)
+    {
+        // ...
+    }
+
+    public async Task<IEndpointResult> ProcessAsync(HttpContext context)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.EndSession + "CallbackEndpoint");
+        
+        if (!HttpMethods.IsGet(context.Request.Method))
+        {
+            _logger.LogWarning("Invalid HTTP method for end session callback endpoint.");
+            return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
+        }
+
+        _logger.LogDebug("Processing signout callback request");
+
+        var parameters = context.Request.Query.AsNameValueCollection();
+        var result = await _endSessionRequestValidator.ValidateCallbackAsync(parameters);
+
+        if (!result.IsError)
+        {
+            _logger.LogInformation("Successful signout callback.");
+        }
+        else
+        {
+            _logger.LogError("Error validating signout callback: {error}", result.Error);
+        }
+            
+        return new EndSessionCallbackResult(result);
+    }
+}
+//---------------------------------------Ʌ
+
+//-----------------------------------V
+public class EndSessionCallbackResult : EndpointResult<EndSessionCallbackResult>
+{
+    public EndSessionCallbackValidationResult Result { get; }
+    public EndSessionCallbackResult(EndSessionCallbackValidationResult result) { Result = result ?? throw new ArgumentNullException(nameof(result)); }
+}
+
+class EndSessionCallbackHttpWriter : IHttpResponseWriter<EndSessionCallbackResult>
+{
+    public EndSessionCallbackHttpWriter(IdentityServerOptions options)
+    {
+        _options = options;
+    }
+
+    private IdentityServerOptions _options;
+
+    public async Task WriteHttpResponse(EndSessionCallbackResult result, HttpContext context)
+    {
+        if (result.Result.IsError)
+        {
+            context.Response.StatusCode = (int) HttpStatusCode.BadRequest;
+        }
+        else
+        {
+            context.Response.SetNoCache();
+            AddCspHeaders(result, context);
+
+            var html = GetHtml(result);
+            await context.Response.WriteHtmlAsync(html);
+        }
+    }
+
+    private void AddCspHeaders(EndSessionCallbackResult result, HttpContext context)
+    {
+        if (_options.Authentication.RequireCspFrameSrcForSignout)
+        {
+            var sb = new StringBuilder();
+            var origins = result.Result.FrontChannelLogoutUrls?.Select(x => x.GetOrigin());
+            if (origins != null)
+            {
+                foreach (var origin in origins.Distinct())
+                {
+                    sb.Append(origin);
+                    if (sb.Length > 0) sb.Append(" ");
+                }
+            }
+
+            // the hash matches the embedded style element being used below
+            context.Response.AddStyleCspHeaders(_options.Csp, IdentityServerConstants.ContentSecurityPolicyHashes.EndSessionStyle, sb.ToString());
+        }
+    }
+
+    private string GetHtml(EndSessionCallbackResult result)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><style>iframe{{display:none;width:0;height:0;}}</style><body>");
+
+        if (result.Result.FrontChannelLogoutUrls != null)
+        {
+            foreach (var url in result.Result.FrontChannelLogoutUrls)
+            {
+                sb.AppendFormat("<iframe loading='eager' allow='' src='{0}'></iframe>", HtmlEncoder.Default.Encode(url));
+                sb.AppendLine();
+            }
+        }
+
+        return sb.ToString();
+    }
+}
+//-----------------------------------Ʌ
+
+//------------------------------------------>>
+public interface IEndSessionRequestValidator
+{
+    Task<EndSessionValidationResult> ValidateAsync(NameValueCollection parameters, ClaimsPrincipal subject);
+    Task<EndSessionCallbackValidationResult> ValidateCallbackAsync(NameValueCollection parameters);
+}
+//------------------------------------------<<
+
+//-------------------------------------V
+public class EndSessionRequestValidator : IEndSessionRequestValidator
+{
+    protected readonly ILogger Logger;
+    protected readonly IdentityServerOptions Options;
+    protected readonly ITokenValidator TokenValidator;
+    protected readonly IRedirectUriValidator UriValidator;
+    protected readonly IUserSession UserSession;
+    public ILogoutNotificationService LogoutNotificationService { get; }
+
+    protected readonly IMessageStore<LogoutNotificationContext> EndSessionMessageStore;
+
+    public EndSessionRequestValidator(
+        IdentityServerOptions options,
+        ITokenValidator tokenValidator,
+        IRedirectUriValidator uriValidator,
+        IUserSession userSession,
+        ILogoutNotificationService logoutNotificationService,
+        IMessageStore<LogoutNotificationContext> endSessionMessageStore,
+        ILogger<EndSessionRequestValidator> logger)
+    {
+        // ...
+    }
+
+    public async Task<EndSessionValidationResult> ValidateAsync(NameValueCollection parameters, ClaimsPrincipal subject)
+    {
+        var isAuthenticated = subject.IsAuthenticated();
+
+        if (!isAuthenticated && Options.Authentication.RequireAuthenticatedUserForSignOutMessage)
+        {
+            return Invalid("User is anonymous. Ignoring end session parameters");
+        }
+
+        var validatedRequest = new ValidatedEndSessionRequest
+        {
+            Raw = parameters
+        };
+
+        var idTokenHint = parameters.Get(OidcConstants.EndSessionRequest.IdTokenHint);
+        if (idTokenHint.IsPresent())
+        {
+            // validate id_token - no need to validate token life time
+            var tokenValidationResult = await TokenValidator.ValidateIdentityTokenAsync(idTokenHint, null, false);
+            if (tokenValidationResult.IsError)
+            {
+                return Invalid("Error validating id token hint", validatedRequest);
+            }
+
+            validatedRequest.SetClient(tokenValidationResult.Client);
+
+            // validate sub claim against currently logged on user
+            var subClaim = tokenValidationResult.Claims.FirstOrDefault(c => c.Type == JwtClaimTypes.Subject);
+            if (subClaim != null && isAuthenticated)
+            {
+                if (subject.GetSubjectId() != subClaim.Value)
+                {
+                    return Invalid("Current user does not match identity token", validatedRequest);
+                }
+
+                validatedRequest.Subject = subject;
+                validatedRequest.SessionId = await UserSession.GetSessionIdAsync();
+                validatedRequest.ClientIds = await UserSession.GetClientListAsync();
+            }
+
+            var redirectUri = parameters.Get(OidcConstants.EndSessionRequest.PostLogoutRedirectUri);
+            //  redirectUri is https://localhost:7184/signout-callback-oidc
+
+            if (redirectUri.IsPresent())
+            {
+                if (await UriValidator.IsPostLogoutRedirectUriValidAsync(redirectUri, validatedRequest.Client))
+                {
+                    validatedRequest.PostLogOutUri = redirectUri;
+                }
+                else
+                {
+                    Logger.LogWarning("Invalid PostLogoutRedirectUri: {postLogoutRedirectUri}", redirectUri);
+                }
+            }
+
+            if (validatedRequest.PostLogOutUri != null)
+            {
+                var state = parameters.Get(OidcConstants.EndSessionRequest.State);
+                if (state.IsPresent())
+                {
+                    validatedRequest.State = state;
+                }
+            }
+        }
+        else
+        {
+            // no id_token to authenticate the client, but we do have a user and a user session
+            validatedRequest.Subject = subject;
+            validatedRequest.SessionId = await UserSession.GetSessionIdAsync();
+            validatedRequest.ClientIds = await UserSession.GetClientListAsync();
+        }
+
+        var uilocales = parameters.Get(OidcConstants.EndSessionRequest.UiLocales);
+        if (uilocales.IsPresent())
+        {
+            if (uilocales.Length > Options.InputLengthRestrictions.UiLocale)
+            {
+                var log = new EndSessionRequestValidationLog(validatedRequest);
+                Logger.LogWarning("UI locale too long. It will be ignored." + Environment.NewLine + "{@details}", log);
+            }
+            else
+            {
+                validatedRequest.UiLocales = uilocales;
+            }
+        }
+
+        return new EndSessionValidationResult
+        {
+            ValidatedRequest = validatedRequest,
+            IsError = false
+        };
+    }
+
+    protected virtual EndSessionValidationResult Invalid(string message, ValidatedEndSessionRequest request = null)
+    {
+        message = "End session request validation failure: " + message;
+        if (request != null)
+        {
+            var log = new EndSessionRequestValidationLog(request);
+            Logger.LogInformation(message + Environment.NewLine + "{@details}", log);
+        }
+        else
+        {
+            Logger.LogInformation(message);
+        }
+
+        return new EndSessionValidationResult
+        {
+            IsError = true,
+            Error = "Invalid request",
+            ErrorDescription = message
+        };
+    }
+
+    public async Task<EndSessionCallbackValidationResult> ValidateCallbackAsync(NameValueCollection parameters)
+    {
+        var result = new EndSessionCallbackValidationResult
+        {
+            IsError = true
+        };
+
+        var endSessionId = parameters[Constants.UIConstants.DefaultRoutePathParams.EndSessionCallback];
+        var endSessionMessage = await EndSessionMessageStore.ReadAsync(endSessionId);
+        if (endSessionMessage?.Data?.ClientIds?.Any() == true)
+        {
+            result.IsError = false;
+            result.FrontChannelLogoutUrls = await LogoutNotificationService.GetFrontChannelLogoutNotificationsUrlsAsync(endSessionMessage.Data);
+        }
+        else
+        {
+            result.Error = "Failed to read end session callback message";
+        }
+
+        return result;
     }
 }
 //-------------------------------------Ʌ
@@ -1535,9 +2040,9 @@ internal class IdentityServerAuthenticationService : IAuthenticationService
         _backChannelLogoutService = backChannelLogoutService;
         _options = options;
         _logger = logger;
-     }
+    }
 
-    public async Task SignInAsync(HttpContext context, string scheme, ClaimsPrincipal principal, AuthenticationProperties properties)
+    public async Task SignInAsync(HttpContext context, string scheme, ClaimsPrincipal principal, AuthenticationProperties properties)  // <-----------------i5
     {
         var defaultScheme = await _schemes.GetDefaultSignInSchemeAsync();
         var cookieScheme = await context.GetCookieAuthenticationSchemeAsync();
@@ -1650,7 +2155,7 @@ public interface IUserSession
 //---------------------------<<
 
 //-----------------------------V
-public class DefaultUserSession : IUserSession
+public class DefaultUserSession : IUserSession  // this is not a database to store seesion, it relys on cookie by calls `AuthenticateAsync()` to get user session
 {
     protected readonly IHttpContextAccessor HttpContextAccessor;
     protected readonly IAuthenticationHandlerProvider Handlers;
@@ -2739,7 +3244,7 @@ public class AuthorizeHttpWriter : IHttpResponseWriter<AuthorizeResult>
         {
             context.Response.SetNoCache();
             AddSecurityHeaders(context);
-            await context.Response.WriteHtmlAsync(GetFormPostHtml(response));
+            await context.Response.WriteHtmlAsync(GetFormPostHtml(response));  // <----------------------------c3.5 redirect users with https://localhost:7184/signin-oidc POST
         }
         else
         {

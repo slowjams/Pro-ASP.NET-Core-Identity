@@ -378,8 +378,8 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             }
         }
 
-        string text2 = claimsPrincipal?.FindFirst("iss")?.Value;
-        if (!string.IsNullOrEmpty(text2))
+        string text = claimsPrincipal?.FindFirst("iss")?.Value;
+        if (!string.IsNullOrEmpty(text))
         {
             if (string.IsNullOrEmpty(message.Iss))
             {
@@ -387,7 +387,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 return true;
             }
 
-            if (!string.Equals(text2, message.Iss, StringComparison.Ordinal))
+            if (!string.Equals(text, message.Iss, StringComparison.Ordinal))
             {
                 base.Logger.RemoteSignOutIssuerInvalid();
                 return true;
@@ -399,7 +399,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         return true;
     }
 
-    public virtual async Task SignOutAsync(AuthenticationProperties? properties)
+    public virtual async Task SignOutAsync(AuthenticationProperties? properties)  // <------------------------------sot0
     {
         string text = ResolveTarget(base.Options.ForwardSignOut);
         if (text != null)
@@ -419,7 +419,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);
         }
 
-        OpenIdConnectMessage message2 = new OpenIdConnectMessage
+        OpenIdConnectMessage message = new OpenIdConnectMessage
         {
             EnableTelemetryParameters = !base.Options.DisableTelemetry,
             IssuerAddress = (_configuration?.EndSessionEndpoint ?? string.Empty),
@@ -435,11 +435,11 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         }
 
         base.Logger.PostSignOutRedirect(properties.RedirectUri);
-        OpenIdConnectMessage openIdConnectMessage = message2;
+        OpenIdConnectMessage openIdConnectMessage = message;
         openIdConnectMessage.IdTokenHint = await base.Context.GetTokenAsync(base.Options.SignOutScheme, "id_token");
         RedirectContext redirectContext = new RedirectContext(base.Context, base.Scheme, base.Options, properties)
         {
-            ProtocolMessage = message2
+            ProtocolMessage = message
         };
         await Events.RedirectToIdentityProviderForSignOut(redirectContext);
         if (redirectContext.Handled)
@@ -448,27 +448,29 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             return;
         }
 
-        message2 = redirectContext.ProtocolMessage;
-        if (!string.IsNullOrEmpty(message2.State))
+        message = redirectContext.ProtocolMessage;
+        if (!string.IsNullOrEmpty(message.State))
         {
-            properties.Items[OpenIdConnectDefaults.UserstatePropertiesKey] = message2.State;
+            properties.Items[OpenIdConnectDefaults.UserstatePropertiesKey] = message.State;
         }
 
-        message2.State = base.Options.StateDataFormat.Protect(properties);
-        if (string.IsNullOrEmpty(message2.IssuerAddress))
+        message.State = base.Options.StateDataFormat.Protect(properties);
+        if (string.IsNullOrEmpty(message.IssuerAddress))
         {
             throw new InvalidOperationException("Cannot redirect to the end session endpoint, the configuration may be missing or invalid.");
         }
 
         if (base.Options.AuthenticationMethod == OpenIdConnectRedirectBehavior.RedirectGet)
         {
-            string text2 = message2.CreateLogoutRequestUrl();
+            string redirectUri = message.CreateLogoutRequestUrl();
+            // redirectUri is below
+            // https://localhost:5001/connect/endsession?post_logout_redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignout-callback-oidc&id_token_hint=eyJhbGciOiJSUzxxxx
             if (!Uri.IsWellFormedUriString(text2, UriKind.Absolute))
             {
-                base.Logger.InvalidLogoutQueryStringRedirectUrl(text2);
+                base.Logger.InvalidLogoutQueryStringRedirectUrl(redirectUri);
             }
 
-            base.Response.Redirect(text2);
+            base.Response.Redirect(redirectUri);  // <---------------------------------------sot1.
         }
         else
         {
@@ -477,7 +479,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 throw new NotImplementedException($"An unsupported authentication method has been configured: {base.Options.AuthenticationMethod}");
             }
 
-            string s = message2.BuildFormPost();
+            string s = message.BuildFormPost();
             byte[] bytes = Encoding.UTF8.GetBytes(s);
             base.Response.ContentLength = bytes.Length;
             base.Response.ContentType = "text/html;charset=UTF-8";
@@ -542,13 +544,13 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             stringValues = "(not set)";
         }
 
-        StringValues stringValues2 = base.Context.Response.Headers.SetCookie;
-        if (stringValues2 == StringValues.Empty)
+        StringValues stringValues = base.Context.Response.Headers.SetCookie;
+        if (stringValues == StringValues.Empty)
         {
-            stringValues2 = "(not set)";
+            stringValues = "(not set)";
         }
 
-        base.Logger.HandleChallenge(stringValues, stringValues2);
+        base.Logger.HandleChallenge(stringValues, stringValues);
     }
 
     private async Task HandleChallengeAsyncInternal(AuthenticationProperties properties)   // <-------------------------------a0
@@ -584,7 +586,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             properties.Items.Add(OAuthConstants.CodeVerifierKey, text);
             string value = WebEncoders.Base64UrlEncode(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
             openIdConnectMessage.Parameters.Add(OAuthConstants.CodeChallengeKey, value);
-            openIdConnectMessage.Parameters.Add(OAuthConstants.CodeChallengeMethodKey, OAuthConstants.CodeChallengeMethodS256);
+            openIdConnectMessage.Parameters.Add(OAuthConstants.CodeChallengeMethodKey, OAuthConstants.CodeChallengeMethodS+256);
         }
 
         TimeSpan? timeSpan = properties.GetParameter<TimeSpan?>("max_age") ?? base.Options.MaxAge;
@@ -634,7 +636,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             string redirectUri = openIdConnectMessage.CreateAuthenticationRequestUrl();   // <------------------------------------------a2
             /* redirectUri is e.g
 
-              https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=gxNP3gQQtCv6ybY-1SzRhuJ2lAJcw4xfY63-N0VMp_M&code_challenge_method=S256&response_mode=form_post&nonce=638574178447973386.ZjQ1NjXXXXXXX&state=XXXXoA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0
+              https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=gxNP3gQQtCv6ybY-1SzRhuJ2lAJcw4xfY63-N0VMp_M&code_challenge_method=S.256&response_mode=form_post&nonce=638574178447973386.ZjQ1NjXXXXXXX&state=XXXXoA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0
 
             */
             
@@ -868,7 +870,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                     }
                     authorizationResponse = tokenValidatedContext.ProtocolMessage;
                     tokenEndpointResponse = tokenValidatedContext.TokenEndpointResponse;
-                    user = tokenValidatedContext.Principal!;   // <----------------------------------------o4.1 user is set now
+                    user = tokenValidatedContext.Principal!;   // <-----------------o4.1 user is set now, but lose "user = Emma" claim, since idToken normally doesn't contains user name
                     properties = tokenValidatedContext.Properties;
                     jwt = tokenValidatedContext.SecurityToken;
                     nonce = tokenValidatedContext.Nonce;
@@ -1038,7 +1040,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
            "amr": [
                "pwd"
            ],
-           "nonce": "638575896217007596.ZmVlZWNiNzEtZDJkNS00N2VlLWJmMmItZmM3YjIzM2VkNDExYjVmM2RiYTMtNzYxMi00OTc2LWEzZDEtZTBmNmZjZjNlYjg3",
+           "nonce": "638575896217007596.ZmVlZWNiNzEtZDJkNSN2VlLWJmMmItZmM3YjIzM2VkNDExYjVmM2RiYTMtNzYxMi00OTc2LWEzZDEtZTBmNmZjZjNlYjg3",
            "at_hash": "OW66WFmR8RXkZMOx-jGDSg",
            "sid": "9FDA47CA6FF69E743E1298E10D3D6424",
            "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
@@ -1512,7 +1514,7 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
             }
         }
 
-        await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);  // <-------------o5.0 CookieAuthenticationHandler serialize ClaimsIdentity into cookie
+        await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);  // <-----------o5.0 CookieAuthenticationHandler serialize ClaimsIdentity into cookie
 
         // Default redirect path is the base path
         if (string.IsNullOrEmpty(ticketContext.ReturnUri))

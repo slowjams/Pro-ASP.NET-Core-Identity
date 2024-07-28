@@ -419,7 +419,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);
         }
 
-        OpenIdConnectMessage message2 = new OpenIdConnectMessage
+        OpenIdConnectMessage message = new OpenIdConnectMessage
         {
             EnableTelemetryParameters = !base.Options.DisableTelemetry,
             IssuerAddress = (_configuration?.EndSessionEndpoint ?? string.Empty),
@@ -435,11 +435,11 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         }
 
         base.Logger.PostSignOutRedirect(properties.RedirectUri);
-        OpenIdConnectMessage openIdConnectMessage = message2;
+        OpenIdConnectMessage openIdConnectMessage = message;
         openIdConnectMessage.IdTokenHint = await base.Context.GetTokenAsync(base.Options.SignOutScheme, "id_token");
         RedirectContext redirectContext = new RedirectContext(base.Context, base.Scheme, base.Options, properties)
         {
-            ProtocolMessage = message2
+            ProtocolMessage = message
         };
         await Events.RedirectToIdentityProviderForSignOut(redirectContext);
         if (redirectContext.Handled)
@@ -448,21 +448,21 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             return;
         }
 
-        message2 = redirectContext.ProtocolMessage;
-        if (!string.IsNullOrEmpty(message2.State))
+        message = redirectContext.ProtocolMessage;
+        if (!string.IsNullOrEmpty(message.State))
         {
-            properties.Items[OpenIdConnectDefaults.UserstatePropertiesKey] = message2.State;
+            properties.Items[OpenIdConnectDefaults.UserstatePropertiesKey] = message.State;
         }
 
-        message2.State = base.Options.StateDataFormat.Protect(properties);
-        if (string.IsNullOrEmpty(message2.IssuerAddress))
+        message.State = base.Options.StateDataFormat.Protect(properties);
+        if (string.IsNullOrEmpty(message.IssuerAddress))
         {
             throw new InvalidOperationException("Cannot redirect to the end session endpoint, the configuration may be missing or invalid.");
         }
 
         if (base.Options.AuthenticationMethod == OpenIdConnectRedirectBehavior.RedirectGet)
         {
-            string text2 = message2.CreateLogoutRequestUrl();
+            string text2 = message.CreateLogoutRequestUrl();
             if (!Uri.IsWellFormedUriString(text2, UriKind.Absolute))
             {
                 base.Logger.InvalidLogoutQueryStringRedirectUrl(text2);
@@ -477,7 +477,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 throw new NotImplementedException($"An unsupported authentication method has been configured: {base.Options.AuthenticationMethod}");
             }
 
-            string s = message2.BuildFormPost();
+            string s = message.BuildFormPost();
             byte[] bytes = Encoding.UTF8.GetBytes(s);
             base.Response.ContentLength = bytes.Length;
             base.Response.ContentType = "text/html;charset=UTF-8";
