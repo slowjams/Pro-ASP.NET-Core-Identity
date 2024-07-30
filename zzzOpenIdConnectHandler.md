@@ -1023,7 +1023,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                "pwd"
            ],
            "client_id": "imagegalleryclient",
-           "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+           "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",  <---------------Emma's SubjectId
            "auth_time": 1721992825,
            "idp": "local",
            "sid": "9FDA47CA6FF69E743E1298E10D3D6424",
@@ -1043,7 +1043,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
            "nonce": "638575896217007596.ZmVlZWNiNzEtZDJkNSN2VlLWJmMmItZmM3YjIzM2VkNDExYjVmM2RiYTMtNzYxMi00OTc2LWEzZDEtZTBmNmZjZjNlYjg3",
            "at_hash": "OW66WFmR8RXkZMOx-jGDSg",
            "sid": "9FDA47CA6FF69E743E1298E10D3D6424",
-           "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+           "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",   <---------------Emma's SubjectId
            "auth_time": 1721992825,
            "idp": "local"
         }

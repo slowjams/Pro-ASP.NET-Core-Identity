@@ -939,7 +939,7 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
 }
 //-------------------------------------Ʌ
 
-//-------------------------------V
+//-------------------------------V // handle https://localhost:5001/connect/endsession
 internal class EndSessionEndpoint : IEndpointHandler
 {
     private readonly IEndSessionRequestValidator _endSessionRequestValidator;
@@ -990,18 +990,18 @@ internal class EndSessionEndpoint : IEndpointHandler
             return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
         }
 
-        var user = await _userSession.GetUserAsync();
+        var user = await _userSession.GetUserAsync();  // <---------------------------e1.1
 
         _logger.LogDebug("Processing signout request for {subjectId}", user?.GetSubjectId() ?? "anonymous");
 
-        var result = await _endSessionRequestValidator.ValidateAsync(parameters, user);
+        var result = await _endSessionRequestValidator.ValidateAsync(parameters, user);  // <---------------------------e1.2
 
         if (result.IsError)
             _logger.LogError("Error processing end session request {error}", result.Error);
         else
             _logger.LogDebug("Success validating end session request from {clientId}", result.ValidatedRequest?.Client?.ClientId);
 
-        return new EndSessionResult(result);
+        return new EndSessionResult(result);  // <--------------------e1.3
     }
 }
 //-------------------------------Ʌ
@@ -1036,7 +1036,7 @@ class EndSessionHttpWriter : IHttpResponseWriter<EndSessionResult>
     private IServerUrls _urls;
     private IMessageStore<LogoutMessage> _logoutMessageStore;
 
-    public async Task WriteHttpResponse(EndSessionResult result, HttpContext context)
+    public async Task WriteHttpResponse(EndSessionResult result, HttpContext context)  // <--------------------e1.3
     {
         var validatedRequest = result.Result.IsError ? null : result.Result.ValidatedRequest;
 
@@ -1052,7 +1052,7 @@ class EndSessionHttpWriter : IHttpResponseWriter<EndSessionResult>
             }
         }
 
-        var redirect = _options.UserInteraction.LogoutUrl;  // redirect is "/Account/Logout" here
+        var redirect = _options.UserInteraction.LogoutUrl;  // redirect is "/Account/Logout" here  // <--------------------e1.4
 
         if (redirect.IsLocalUrl())
         {
@@ -1065,7 +1065,7 @@ class EndSessionHttpWriter : IHttpResponseWriter<EndSessionResult>
             // redirect is https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053fXDUzUXvku1K6jgfyhhxxx here
         }
 
-        context.Response.Redirect(redirect);
+        context.Response.Redirect(redirect);  // <--------------------e1.5.
     }
 }
 //---------------------------Ʌ
@@ -1083,7 +1083,7 @@ internal class EndSessionCallbackEndpoint : IEndpointHandler  // handles /connec
         // ...
     }
 
-    public async Task<IEndpointResult> ProcessAsync(HttpContext context)
+    public async Task<IEndpointResult> ProcessAsync(HttpContext context)  // <-------------------
     {
         using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.EndSession + "CallbackEndpoint");
         
@@ -1096,7 +1096,7 @@ internal class EndSessionCallbackEndpoint : IEndpointHandler  // handles /connec
         _logger.LogDebug("Processing signout callback request");
 
         var parameters = context.Request.Query.AsNameValueCollection();
-        var result = await _endSessionRequestValidator.ValidateCallbackAsync(parameters);
+        var result = await _endSessionRequestValidator.ValidateCallbackAsync(parameters);  // <-------------------
 
         if (!result.IsError)
         {
@@ -1107,7 +1107,7 @@ internal class EndSessionCallbackEndpoint : IEndpointHandler  // handles /connec
             _logger.LogError("Error validating signout callback: {error}", result.Error);
         }
             
-        return new EndSessionCallbackResult(result);
+        return new EndSessionCallbackResult(result);  // <-------------------
     }
 }
 //---------------------------------------Ʌ
@@ -1128,7 +1128,7 @@ class EndSessionCallbackHttpWriter : IHttpResponseWriter<EndSessionCallbackResul
 
     private IdentityServerOptions _options;
 
-    public async Task WriteHttpResponse(EndSessionCallbackResult result, HttpContext context)
+    public async Task WriteHttpResponse(EndSessionCallbackResult result, HttpContext context)  // <-------------------
     {
         if (result.Result.IsError)
         {
@@ -1215,7 +1215,7 @@ public class EndSessionRequestValidator : IEndSessionRequestValidator
         // ...
     }
 
-    public async Task<EndSessionValidationResult> ValidateAsync(NameValueCollection parameters, ClaimsPrincipal subject)
+    public async Task<EndSessionValidationResult> ValidateAsync(NameValueCollection parameters, ClaimsPrincipal subject)  // <---------------------e1.2.1
     {
         var isAuthenticated = subject.IsAuthenticated();
 
@@ -1229,7 +1229,7 @@ public class EndSessionRequestValidator : IEndSessionRequestValidator
             Raw = parameters
         };
 
-        var idTokenHint = parameters.Get(OidcConstants.EndSessionRequest.IdTokenHint);
+        var idTokenHint = parameters.Get(OidcConstants.EndSessionRequest.IdTokenHint);  // <------------------------------e1.2.2
         if (idTokenHint.IsPresent())
         {
             // validate id_token - no need to validate token life time
@@ -1255,7 +1255,7 @@ public class EndSessionRequestValidator : IEndSessionRequestValidator
                 validatedRequest.ClientIds = await UserSession.GetClientListAsync();
             }
 
-            var redirectUri = parameters.Get(OidcConstants.EndSessionRequest.PostLogoutRedirectUri);
+            var redirectUri = parameters.Get(OidcConstants.EndSessionRequest.PostLogoutRedirectUri);  // <------------------------------e1.2.3
             //  redirectUri is https://localhost:7184/signout-callback-oidc
 
             if (redirectUri.IsPresent())
@@ -1301,7 +1301,7 @@ public class EndSessionRequestValidator : IEndSessionRequestValidator
             }
         }
 
-        return new EndSessionValidationResult
+        return new EndSessionValidationResult  // <------------------------------e1.2.4.
         {
             ValidatedRequest = validatedRequest,
             IsError = false
@@ -3364,7 +3364,7 @@ public abstract class EndpointResult<T> : IEndpointResult where T : class, IEndp
 ## Razor Page (created by template)
 
 ```C#
-//----------------------------V
+//----------------------------V  Account/Login/Index.cshtml
 [SecurityHeaders]
 [AllowAnonymous]
 public class Index : PageModel
@@ -3470,7 +3470,7 @@ public class Index : PageModel
                     }
 
                     /* Input.ReturnUrl is
-                    /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=0RPBpTHdTI26Nq-ylPLyeMnOQpVRvM914JxZhVaXFEw&code_challenge_method=S256&response_mode=form_post&nonce=638575024813670890.ZDdjNWYyZTMtZjgyNC00YjU3LWJiNjQtNGEyZDYxNm3N2U4OTdmNmY0NDItZWQ1Zi00YzBlLTk5NmMtM2FiNWUzNGVjZGFj&state=CfDJ8Fr2n1UxboNJlI8uHVA4skr-GSu4CL-Ite2zMgzmUDV0hJbvWGe-EOcojQhDhDKVg8Yr-8f4bdwQCCvPXVwjof6NzqM0X2Xuna-hOczCNqlW1gvRYZYlgLcLQzvWGJrIevwgI5WSXbhV31ZioZO92BhHh-6F21M2dZ7gp_uFX0HL8vGiaKJmiOmNmFQogOmt4pK2RjhPFRzBQmkuvPe7iMtBwp_qEeVFRTNd6k0r5xzFAinPR-cFefjQqui9YJbolD6mTfNLr-VMHOtrVkl1VF3lzuqg2rm-4f3NtABGjWQMbYw0MqlZE9dglgHBFZU97rW9eBQ50IZXiAT5-q9EA-_-vXNrQPKETDAOpFE5A2x2lPlHvHCm3cmSMN1TUA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
+                    /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=0RPBpTHdTI26Nq-ylPLyeMnOQpVRvM914JxZhVaXFEw&code_challenge_method=S256&response_mode=form_post&nonce=638575024813670890.ZDdjNWYyZTMtZjgyNC00YjU3LWJiNjQtNGEyZDYxNm3N2U4OTdmNmY0NDItZWQ1Zi00YzBlLTk5NmMtM2FiNWUzNGVjZGFj&state=CfDJ8Fr2n1UxboNJlI8uHVA4skr-GSu4CL-ItezMgzmUDV0hJbvWGe-EOcojQhDhDKVg8Yr-8f4bdwQCCvPXVwjof6NzqM0X2Xuna-hOczCNqlW1gvRYZYlgLcLQzvWGJrIevwgI5WSXbhV31ZioZO92BhHh-6F21M2dZ7gp_uFX0HL8vGiaKJmiOmNmFQogOmt4pK2RjhPFRzBQmkuvPe7iMtBwp_qEeVFRTNd6k0r5xzFAinPR-cFefjQqui9YJbolD6mTfNLr-VMHOtrVkl1VF3lzuqg2rm-4f3NtABGjWQMbYw0MqlZE9dglgHBFZU97rW9eBQ50IZXiAT5-q9EA-_-vXNrQPKETDAOpFE5A2x2lPlHvHCm3cmSMN1TUA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
                     */
                     return Redirect(Input.ReturnUrl ?? "~/");  // <-----------------------------i5.
                 }
@@ -3505,6 +3505,155 @@ public class Index : PageModel
     private async Task BuildModelAsync(string? returnUrl) {}
 }
 //----------------------------Ʌ
+
+//----------------------------V  Account/Logout/Index.cshtml
+[SecurityHeaders]
+[AllowAnonymous]
+public class Index : PageModel
+{
+    private readonly IIdentityServerInteractionService _interaction;
+    private readonly IEventService _events;
+
+    [BindProperty] 
+    public string? LogoutId { get; set; }
+
+    public Index(IIdentityServerInteractionService interaction, IEventService events)
+    {
+        _interaction = interaction;
+        _events = events;
+    }
+
+    public async Task<IActionResult> OnGet(string? logoutId) // <-----------------------------------e2.0
+    {
+        LogoutId = logoutId;
+
+        var showLogoutPrompt = LogoutOptions.ShowLogoutPrompt;
+
+        if (User.Identity?.IsAuthenticated != true)
+        {
+            // if the user is not authenticated, then just show logged out page
+            showLogoutPrompt = false;
+        }
+        else
+        {
+            var context = await _interaction.GetLogoutContextAsync(LogoutId);
+            if (context?.ShowSignoutPrompt == false)
+            {
+                // it's safe to automatically sign-out
+                showLogoutPrompt = false;
+            }
+        }
+            
+        if (showLogoutPrompt == false)
+        {
+            return await OnPost();  // <-----------------------------------e2.1
+        }
+
+        return Page();
+    }
+
+    public async Task<IActionResult> OnPost()
+    {
+        if (User.Identity?.IsAuthenticated == true)
+        {
+            LogoutId ??= await _interaction.CreateLogoutContextAsync();
+                
+            // delete local authentication cookie
+            await HttpContext.SignOutAsync();  // <--------------------------------------------e2.2 end the session
+
+            // see if we need to trigger federated logout
+            var idp = User.FindFirst(JwtClaimTypes.IdentityProvider)?.Value;
+
+            // raise the logout event
+            await _events.RaiseAsync(new UserLogoutSuccessEvent(User.GetSubjectId(), User.GetDisplayName()));
+            Telemetry.Metrics.UserLogout(idp);
+
+            // if it's a local login we can ignore this workflow
+            if (idp != null && idp != Duende.IdentityServer.IdentityServerConstants.LocalIdentityProvider)
+            {
+                // we need to see if the provider supports external logout
+                if (await HttpContext.GetSchemeSupportsSignOutAsync(idp))
+                {
+                    // build a return URL so the upstream provider will redirect back
+                    // to us after the user has logged out. this allows us to then
+                    // complete our single sign-out processing.
+                    var url = Url.Page("/Account/Logout/Loggedout", new { logoutId = LogoutId });
+
+                    // this triggers a redirect to the external provider for sign-out
+                    return SignOut(new AuthenticationProperties { RedirectUri = url }, idp);
+                }
+            }
+        }
+
+        return RedirectToPage("/Account/Logout/LoggedOut", new { logoutId = LogoutId });  // <--------------------------------------------e2.3
+    }
+}
+
+//----------------------------Ʌ
+
+//--------------------------------V /Account/Logout/LoggedOut.cshtml
+[SecurityHeaders]
+[AllowAnonymous]
+public class LoggedOut : PageModel
+{
+    private readonly IIdentityServerInteractionService _interactionService;
+
+    public LoggedOutViewModel View { get; set; } = default!;
+
+    public LoggedOut(IIdentityServerInteractionService interactionService)
+    {
+        _interactionService = interactionService;
+    }
+
+    public async Task OnGet(string? logoutId)  // <--------------------------------------------e2.4
+    {
+        // get context information (client name, post logout redirect URI and iframe for federated signout)
+        var logout = await _interactionService.GetLogoutContextAsync(logoutId);
+
+        View = new LoggedOutViewModel
+        {
+            AutomaticRedirectAfterSignOut = LogoutOptions.AutomaticRedirectAfterSignOut,
+            PostLogoutRedirectUri = logout?.PostLogoutRedirectUri,
+            ClientName = String.IsNullOrEmpty(logout?.ClientName) ? logout?.ClientId : logout?.ClientName,
+            // SignOutIFrameUrl is https://localhost:5001/connect/endsession/callback?endSessionId=CfDJ8Fr2n1UxboNJxxx
+            SignOutIframeUrl = logout?.SignOutIFrameUrl  // <-------------------------------------------------------------------e2.5
+            // see why connect/session/callback is needed refer to https://github.com/IdentityServer/IdentityServer3/issues/1581 look like it is just a placeholder
+        };
+    }
+}
+/*
+@page
+@model Marvin.IDP.Pages.Logout.LoggedOut
+
+<div class="logged-out-page">
+    <h1>
+        Logout
+        <small>You are now logged out</small>
+    </h1>
+
+    @if (Model.View.PostLogoutRedirectUri != null)
+    {
+        <div>
+            Click <a class="PostLogoutRedirectUri" href="@Model.View.PostLogoutRedirectUri">here</a> to return to the
+            <span>@Model.View.ClientName</span> application.
+        </div>
+    }
+
+    @if (Model.View.SignOutIframeUrl != null)
+    {
+        <iframe width="0" height="0" class="signout" src="@Model.View.SignOutIframeUrl"></iframe>  // <---------------------------------e.2.6
+    }
+</div>
+
+@section scripts
+{
+    @if (Model.View.AutomaticRedirectAfterSignOut)
+    {
+        <script src="~/js/signout-redirect.js"></script>
+    }
+}
+*/
+//--------------------------------Ʌ
 ```
 
 

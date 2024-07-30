@@ -1,8 +1,420 @@
-## OpenIdConnect
+## Intro to IdentityServer
+==============================
+
+ **State** and **PKCE** (Proof of Key Code Exchange) solves different problems, that means they cannot replace each other:
+
+
+* State Parameter (stored on ClientApp) : 
+Prevent Cross-Site Request Forgery (CSRF) attacks (Hacker tricks you to uses his auth code). Users uses browser.
+
+* PKCE (Code Verifier stored on ClientApp, and Code Challenge stored on Authorization Server): Prevent authorization interception (Hacker steals your auth code)
+Note that it only fits in native mobile desktop environment compared to State Parameter which fits the scenerio that users uses browser. Prerequisite knowledge in OS level URL scheme registration see https://www.oauth.com/oauth2-servers/redirect-uris/redirect-uris-native-apps/
+
+Scenario: UserA ask webApp/nativeApp which is an photo process tool we, developers develop to post photos on behalf users to post photos to users' google drive
+
+When **State** Parameter is not used:
+* Both UserA and HackerB registered with webApp. HackerB gets the redirect URL which contains authorization code returned by Google but stops there. HackerB develops a malicious website, UserA previously signin google redirected by webApp before, and now UserA clicks on that malicious website/link which is the HackerB's redirect URL (to webApp), this request goes to webApp with UserA's cookie, webApp authenticates UserA because of the cookie and request access token of HackerB not UserA, so UserA's uploading photos in HackerB's google drive.
+
+After **State** Parameter is used:
+* Before UserA firstly signin google redirected by webApp, **ClientApp creates anti-forgery state token and store it in the server**, let's say this token is `abc123` (this token will be query string in the URL), and webApp also needs to associate this token with UserA's session id (for cookies later). HackerB does the same process, and the token is `xyz123` on the server. Now HackerB tricks UserA to redirect with HackerB's redirect URL (to webApp and `xyz123` as query string in this URl) request, when webApp receives this request from UserA, ClientApp retrieves the UserA session (by using cookie which contains session id) and find UserA's state token is `abc123` not `xyz123`, so webApp declines this request. Note that HackerB won't be able to know UserA's state token
+
+When **PKCE** Parameter is not used:
+* Now HackerB develops a malicious native app and it is installed on UserA's mobile so UserA has both valid nativeApp(mobile version of webApp) and maliciousApp.  After UserA firstly signin google (redirected by nativeApp in the beginning), google sends a redirection url of clientApp back to UserA, however, it is maliciousApp handles this request (to see why refer to the article above), now hackerB gets userA's auth code,  hackerB knows the nativeApp's client secret, for example, SPA or mobile app will expose client secret to the public (quoted from https://medium.com/@alysachan830/the-basics-of-oauth-2-0-authorization-code-implicit-flow-state-and-pkce-ed95d3478e1c)
+
+When **PKCE** Parameter is used:
+* When userA click signin with google on clientApp, clientApp generate a random value called **Code Verifier** (this code verifier also need to be associated with userA using session/cookie),  then clientApp hashes the Code Verifier and the result is called  **Code Challenge**, and clientApp sends the redirection url (google's signin url with code challenge being a query string) to userA, userA signin with his credentials and do a post request with this code challenge, so google's **authoriazation server will store this code challenge** (must be associated with auth code behind the scene). Google's authoriazation server sends a redirection url (contains auth code) to userA, even though it is maliciousApp that intercepts this request, HackerB doesn't know Code Verifier, HackerB might know Code Challenge since it is appended to the url which is easy to steal, but that doesn't matter as google's authoriazation server will need original Code Verifier and do a hash function on it to see if the result is same as code challenge before sending the final access token, only clientApp has the userA's Code Verifier.
+ 
+==================================================================================================================
+
+gfgfgfgfgf IdentityServer flow: client and IdentityServer both started and then client requests an Authorized endpoint
+
+1. IdentityServer4.Hosting.IdentityServerMiddleware[0] Invoking IdentityServer endpoint: IdentityServer4.Endpoints.DiscoveryEndpoint for /.well-known/openid-configuration
+
+2. IdentityServer4.Hosting.IdentityServerMiddleware[0] Invoking IdentityServer endpoint: IdentityServer4.Endpoints.DiscoveryKeyEndpoint for /.well-known/openid-configuration/jwks
+
+3. IdentityServer4.Hosting.IdentityServerMiddleware[0] Invoking IdentityServer endpoint: IdentityServer4.Endpoints.AuthorizeEndpoint for /connect/authorize    request is below
+
+4. IdentityServer4.ResponseHandling.AuthorizeInteractionResponseGenerator[0] Showing login: User is not authenticated
+
+https://localhost:5005/connect/authorize?client_id=movies_mvc_client&redirect_uri=https%3A%2F%2Flocalhost%3A5002%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=p-43fIBx17fDkH74dzXQ5UD-tLi06I-uZ2hLJC7VNrw&code_challenge_method=S256&response_mode=form_post&nonce=638567338983969349.MzMyMjUwMTAtYWFjNS00ODllLTgxZjMtMGNkNTE3NTExOGFkMzIzMzZkN2YtODlhZi00MTNjLTkzYWYtNzFhNGQ2NzQyYmUw&state=CfDJ8Fr2n1UxboNJlI8uHVA4skoRmwxF3pgfFy-1R72fnqWA4dAqaJo0zwcSXn1f0OMzSDtE0zcseq69CcVkUpTfC4Cgl2bcSfllF96NwxTlOQatNFzfQ7DPOPeAqBydoEIKbR43VlivPjLsO4WLcKZfsvWiGLNSnndq33GwGqPXX69qP6H2DGcYOCBh5UaCQIMb8Ez3q9VK3p93vs7S8dnOo1ebHBp3J-bqKiiZsI14jfTW02zqS6cUPBjjReuuibrw5dgDXgFTFvfWFFxw0HpZI2lZ50PYCUgUshLr42lOci4DlAisNH98xXqi0jZzDqTFenbInuz9WHkewizdyKYem4JKb-evVyrFP2m5aW2KdDJqJbvvQxax9Wr9fYL5ZkstdA&x-client-SKU=ID_NETSTANDARD2_0&x-client-ver=6.10.0.0
+
+
+client redirect to
+5. https://localhost:5005/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback%3Fclient_id%3Dmovies_mvc_client%26redirect_uri%3Dhttps%253A%252F%252Flocalhost%253A5002%252Fsignin-oidc%26response_type%3Dcode%26scope%3Dopenid%2520profile%26code_challenge%3Dsb4TagoSL5dZm0yoKqrhPMFyVFzm7BqEKv1qPc0SJ2E%26code_challenge_method%3DS256%26response_mode%3Dform_post%26nonce%3D638567344972487423.NjNmNzM2MzUtMDc0NC00YjQxLWI4NzItYzI3ZjcyYjYzYzk5NDAxZWIwYTUtYTFkNC00Nzg4LWE5MTctMmI3Yzg2ZjQwNDkw%26state%3DCfDJ8Fr2n1UxboNJlI8uHVA4skp8iLAkLOvyhGMzQCakOhC1dxof-RstR40W6ffes6oyXipaodLvz41ZzWUHFlvxOCjgmqUMmvZY9nL1qAfTlJRk2ml6lxOmEPpZBosdqIWrHzXDjOzV6L6U0lYEEEstNSwoLAK3Q9PD-DOlqUtAjsVxfakrF4emTE00dqoGLMRwgnSpEUEXZZ-tuawPFBZu8d_GzpMWvCe4Z0zHPi4uNPbleTWP4dsr8hFWmV0Wa4o-zXHw0DCXISPzkwHIEPEHOmqvatYw8nPFY95HwRofik3GI3t3IoSYHfA2eFK3hIyXzywMCky8yxjMS85fxcfSQzZ33fC5B4vAMNaDGLLCG5f4zvRYFvdlUQe_hwvrH2oH7A%26x-client-SKU%3DID_NETSTANDARD2_0%26x-client-ver%3D6.10.0.0
+
+
+after user login with username and password:
+
+
+https://localhost:5005/connect/authorize/callback?client_id=movies_mvc_client&redirect_uri=https%3A%2F%2Flocalhost%3A5002%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=0qFsZFA2lUjoYobYkwEktE5ii8ARXZ-oM14eLva_xoA&code_challenge_method=S256&response_mode=form_post&nonce=638568074213265770.MTgyY2Q1NjAtZWViNS00MDIzLTgyODgtNWIwOTFkOWM5YTlkMWE0ZDQxZjgtODk4Mi00ZDU5LTkyMTYtYjU5Mjk5Y2VlOTI2&state=CfDJ8Fr2n1UxboNJlI8uHVA4skpAT72lTOJwx9rBEUij3-3baXRptiWBNJq1EU2GKGd6g4v_w761APhA8twe8EeUk_mXB07hYn3GgVeXkVatqF5AaPhFbFmJp0jGGsyGgY_-BIAjAj_OHDtb7XDF9ye5M8AubOICEy4awzvEF-8KASsN5uKjz3D-xcAk5hx8961oXZWfBX_uj7wQe1nN86CT0kqBWyraNhZa-Nzw9oOXirHZ7l9ZLLCpIxuMD0cg85g3M8Vp07wopyxY42_bcOCUeE7dSYbD1oy-F_hhuFjAgBc175oBrbixdDcBXrYdsyCv2-ADa2gOqXryS82rljCXIrW0IDJj3-AH1kwdmS2TVEeD2PhEWDPpKliyyDCDUEifng&x-client-SKU=ID_NETSTANDARD2_0&x-client-ver=6.10.0.0"
+
+IdentityServer4.Hosting.IdentityServerMiddleware: Information: Invoking IdentityServer endpoint: IdentityServer4.Endpoints.AuthorizeCallbackEndpoint for /connect/authorize/callback
+
+
+
+IdentityServer4.Hosting.IdentityServerMiddleware: Information: Invoking IdentityServer endpoint: IdentityServer4.Endpoints.TokenEndpoint for /connect/token
+IdentityServer4.Validation.TokenRequestValidator: Information: Token request validation success, {
+  "ClientId": "movies_mvc_client",
+  "ClientName": "Movies MVC Web App",
+  "GrantType": "authorization_code",
+  "AuthorizationCode": "****6EFB",
+  "RefreshToken": "********",
+  "Raw": {
+    "client_id": "movies_mvc_client",
+    "client_secret": "***REDACTED***",
+    "code": "AD40D97E955E20034F81CA91F3CE03BB1E58614A4E8102781BD982DC34396EFB",
+    "grant_type": "authorization_code",
+    "redirect_uri": "https://localhost:5002/signin-oidc",
+    "code_verifier": "Rq0hyWJoaOL1AkD9xWllf5mq_0sMMmR-q7nzQJ3z9k4"
+  }
+}
+
+IdentityServer4.Hosting.IdentityServerMiddleware: Information: Invoking IdentityServer endpoint: IdentityServer4.Endpoints.UserInfoEndpoint for /connect/userinfo
+
+IdentityServer4.ResponseHandling.UserInfoResponseGenerator: Information: Profile service returned the following claim types: given_name family_name
+
+Identity token: eyJhbGciOiJSUzI1NiIsImtpZCI6IkNEOTlDNTM1QkJFRjEyRkY2OTg5MkNEN0Q0QjMzMkJFIiwidHlwIjoiSldUIn0.eyJuYmYiOjE3MjExMzgxOTcsImV4cCI6MTcyMTEzODQ5NywiaXNzIjoiaHR0cHM6Ly9sb2NhbGhvc3Q6NTAwNSIsImF1ZCI6Im1vdmllc19tdmNfY2xpZW50Iiwibm9uY2UiOiI2Mzg1NjczNDk5MDM1NTk3NDIuTVRreU1EUm1aR010T1RaaFlTMDBNRFprTFRsalpEY3ROREkyWVRnMU56azBPR0l3TWpRd016aG1ZekF0WVRnMU5TMDBZVFJtTFdKak0yRXRZVFU0Tm1abE5UQmxORGRrIiwiaWF0IjoxNzIxMTM4MTk3LCJhdF9oYXNoIjoiNUpyT01BWWMxSUdzRmhNR3Q4dEpiQSIsInNfaGFzaCI6IjFoaGp3cnlRbkpJcDNMOGtKX0JockEiLCJzaWQiOiI0QUYxMzQ0MDg5NDAxRjRCM0NBNUM5MTY1QkQ4RkFGMSIsInN1YiI6IjVCRTg2MzU5LTA3M0MtNDM0Qi1BRDJELUEzOTMyMjIyREFCRSIsImF1dGhfdGltZSI6MTcyMTEzODE5NiwiaWRwIjoibG9jYWwiLCJhbXIiOlsicHdkIl19.RzYc1YEN8opVGf9ENz3jKifdz2ro56wbKbx3BoxzidpJH84oUFI1-Hr1shFciAPB418ksw_-_2caoRaD2mLRsj7o-tCwRJdFvQPdzp6uueIkO6lXQcZ69-EUZnRO-qIqL6vbRCLfn4IGg3QEkQh0Np2dRj_tD9nFN_7X3N4L2hP5ARbG1uyda48KRk_JDEML4p9955B3LwbGolZ6pyh8Xz6iA-eF1UJvMeAfcY-mFLhsRX92R9fETwbkGwflEi3bLtwfS8WO-YVcqj7yI8SFp_yjFlEQGsZ_zvn1kABNft7GcqqwYzjSzPFJ_ek_Xs3yCXtK-rKan7sr33ZIGFj3Hw
+
+```json
+{
+  "nbf": 1721138197,
+  "exp": 1721138497,
+  "iss": "https://localhost:5005",
+  "aud": "movies_mvc_client",
+  "nonce": "638567349903559742.MTkyMDRmZGMtOTZhYS00MDZkLTljZDctNDI2YTg1Nzk0OGIwMjQwMzhmYzAtYTg1NS00YTRmLWJjM2EtYTU4NmZlNTBlNDdk",
+  "iat": 1721138197,
+  "at_hash": "5JrOMAYc1IGsFhMGt8tJbA",
+  "s_hash": "1hhjwryQnJIp3L8kJ_BhrA",
+  "sid": "4AF1344089401F4B3CA5C9165BD8FAF1",
+  "sub": "5BE86359-073C-434B-AD2D-A3932222DABE",
+  "auth_time": 1721138196,
+  "idp": "local",
+  "amr": [
+    "pwd"
+  ]
+}
+```
+
+After User Click Logout (from Client Server 5002 to IdentityServer 5005)
+
+
+https://localhost:5005/connect/endsession?post_logout_redirect_uri=https%3A%2F%2Flocalhost%3A5002%2Fsignout-callback-oidc&id_token_hint=eyJhbxxx
+IdentityServer4.Hosting.IdentityServerMiddleware[0] Invoking IdentityServer endpoint: IdentityServer4.Endpoints.EndSessionEndpoint for /connect/endsession
+
+info: IdentityServer4.Validation.EndSessionRequestValidator[0] End session request validation success
+```json
+{
+  "ClientId": "movies_mvc_client",
+  "ClientName": "Movies MVC Web App",
+  "SubjectId": "5BE86359-073C-434B-AD2D-A3932222DABE",
+  "PostLogOutUri": "https://localhost:5002/signout-callback-oidc",
+  "State": "CfDJ8Fr2n1UxboNJlI8uHVA4skrersQnMvlg0Xe6UDjtZNZgCh0UU19uKQOeXE1aZqPFNj7nQuAC-aHSWPmoyZvdomtIxvdAAgKYHdZvt0yo3pyBMMaMZO31Iyr7x3Fv7v8CcY0ofebZl0x_m8kJ2SISAgoXfT7FYeiPj_a_cu3RqMr1",
+  "Raw": {
+      "post_logout_redirect_uri": "https://localhost:5002/signout-callback-oidc",
+      "id_token_hint": "***REDACTED***",
+      "state": "CfDJ8Fr2n1UxboNJlI8uHVA4skrersQnMvlg0Xe6UDjtZNZgCh0UU19uKQOeXE1aZqPFNj7nQuAC-aHSWPmoyZvdomtIxvdAAgKYHdZvt0yo3pyBMMaMZO31Iyr7x3Fv7v8CcY0ofebZl0x_m8kJ2SISAgoXfT7FYeiPj_a_cu3RqMr1",
+      "x-client-SKU": "ID_NETSTANDARD2_0",
+      "x-client-ver": "6.10.0.0"
+  }
+}
+```
+
+info: IdentityServer4.Hosting.IdentityServerMiddleware[0] Invoking IdentityServer endpoint: IdentityServer4.Endpoints.EndSessionCallbackEndpoint for /connect/endsession/cal
+
+info: IdentityServer4.Endpoints.EndSessionCallbackEndpoint[0] Successful signout callback.
+
+https://localhost:5005/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlIxxx
+
+
+
+if you set (IdentityServerHost.Quickstart.UI) AutomaticRedirectAfterSignOut to true, then there is no "Click here to return to the Movies MVC Web App application" in https://localhost:5005/Account/Logout?logoutId=CfDJ8Fr2n1 page where you originally have to click to return to https://localhost:5002/ movie client, add a screenshot to explain
+
+=======================================================================================
+
+You might wonder why redirect_uri is needed when client_id is supplied in OAuth2, isn't that client app already registered its redirect url in authorization server? so only client_id is needed for the authorization server to look up and retrieve redirect_uri automatically as long as client_id is the correct one?
+
+As pointed out in the OAuth 2.0 specification, the redirect_uri in the Authorization Request is optional. It's only necessary if the client hasn't previously registered a redirection endpoint, or if they've registered multiple redirection endpoints. Both cases are valid.
+
+If there's a single pre-registered redirection endpoint, then the redirect_uri parameter can indeed be omitted.
+
+=======================================================================================
+
+Hybrid Flow, Authorization endpoint returns Id token/Access token while, authorization code flow returns all tokens from  Token Endpoint only
+
+Authorization endpoint
+Token Endpoint
+
+
+
+
+
+===========================================================================================
+
+## Request Pipelines
+
+`7184`: `Client`  `5001`: `IdentityServer`  `7075`: `Api` (note that Api doesn't use `[Authorize]` at all, it is clientApp should use Authorize attribute)
 
 ```C#
-//------------------V
-public class Program 
+public class ClientProgram  // https://localhost:7184
+{
+    public static void Main(string[] args)
+    {
+        builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+            options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
+        })
+        .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme)
+        .AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
+        {
+            options.SignInScheme = CookieAuthenticationDefaults.AuthenticationScheme; 
+            options.Authority = "https://localhost:5001/";
+            options.ClientId = "imagegalleryclient";
+            options.ClientSecret = "secret";
+            options.ResponseType = "code";
+        });
+    }
+}
+```
+
+A. Run Solution
+
+https://localhost:7184  (goes to ImageGallery.Client's GalleryController's Index)
+
+
+1. `AuthenticationMiddleware` calls `AuthenticateAsync()`  
+
+2.  `AuthorizationMiddleware` calls default `ChallengeAsync()`
+
+3. `OpenIdConnectHandler.HandleChallengeAsync()`
+(a1) invoke `https://localhost:5001/.well-known/openid-configuration` and `https://localhost:5001/.well-known/openid-configuration/jwks`
+
+redirect users to `https://localhost:5001/connect/authorize` (a2)
+```C#
+/*
+https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=gxNP3gQQtCv6ybY-1SzRhuJ2lAJcw4xfY63-N0VMp_M&code_challenge_method=S256&response_mode=form_post&nonce=638574178447973386.ZjQ1NjBhYzAtOTVjOC00OWQyLWFjOWUtYWEwYTIwYzNhMWU5ZGQ4NDU0MTktOGQyMi00ZmEzLTlkZjktMDQ4ZTY4MDhiMDM2&state=CfDJ8Fr2n1UxboNJlI8uHVA4skoqzWvRBESNmQtbapScbGyypqXNQqM3EO-KWHib-2DDMkYQWldSjTcokpFYtMjQJD5XN1rtDfaVAAwhUvzEo6e57hN8e2izgZZm4TuLTwaZpBDb1QsoIjGnD-aiIgb_7F9w1k0VBi34RIiLbwcsR-rxYokuDnAeZp0Ndx4TlExO158E9m-58DEigNRBCuaGPWSjZuw2fyT3Z4b6DblgZKSyTGjUwJfu7n8L01lr-CL3xjzc7ZW7Vws647ScwLFdbqAu_IEnDiEokswUxNGR4c6Th5roQZwVmq6T4HvQWGq2J0Xy9KFP6nfZbqLx_hKMht_cqC33G_HSbz_z_GmAJzw5igImxo8LjNRVazD18_t8oA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0
+*/
+```
+
+4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware`'s `AuthorizeEndpoint` handles it (q2 on IdentityServer4 Source Code)
+and `AuthorizeEndpoint` redirects users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost` , the redirection request is below:
+
+```C#
+/*
+https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback%3Fclient_id%3Dimagegalleryclient% 26redirect_uri%3Dhttps%253A%252F% 252Flocalhost%253A7184%252Fsignin-oidc %26response_type%3Dcode%26scope%3Dopenid%2520profile%26code_challenge%3DXXX
+*/
+```
+
+5. User enter credentials, trigger `/Account/Login` post back to IdentityServer (i5), calls `HttpContext.SignInAsync("Cookie")` to **create user-to-idp cookie** (compared to Client calls SignInAsync in step 7, so there will be two cookies, one from user to client, and one from user to IdentityServer) so IdentityUser is transformed to ClaimsPrincipal which contains name claim such as "Emma", then AuthenticationTicket is added into cookie, then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
+
+```C#
+/*
+
+/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=C65uIECsCXnqwGPFOlU1fbmZ9pXvKNxmvCx5v3kiHI4&code_challenge_method=S256&response_mode=form_post&nonce=638574267416022614.MDU0MTRjMjgtZTkyMC00YmFhLWJhYWItN2VhNTdhZTY4YmIxNGM0MjE0N2ItYjNjYy00NGMxLThiYjctYzc1NjY2MGNiNDll&state=CfDJ8Fr2n1UxboNJlI8uHVA4skp7SK2F0Vxutc5qOeTZGQyGWEPBj4A1Ehs8MXQJsYylUCPpd3NjXQEtUPQ5cNPS-ORlAw_pDzW5TDRJxEfm_3PziPZBlGE-vff_m3DJna4mOcM7R6vIZHKPsx5Stf2h7D9D5AAeeOeILPDWyJiKdODSRSZZCbPKIaspX5eDxN8E6_6OXjo5TLrk-qkpBiW36V9mWVXffF3OVF9EM0vkB-lkLbrTIMdO5QscZzs4s3vR8nbL6jclJMkPwiy5GDjgRDvDuqAI14LtVhAGdXfZr0xA3BXCu1Ocfht8I2bpb9PnLGVzAnCFFlgOEaWu6otftkQGoQJNt83lJd7OPFkCOHbxms8PbV3kBIw-C_ubRWRFmw&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
+
+*/
+```
+
+6. Inside `IdentityServerMiddleware` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+
+```C#
+/*  https://localhost:7184/signin-oidc POST
+    body:
+    {
+        code: EA4785B99D609C359E14512C70724FFEFFC15F5EA445486B1B072E73CF3FF8CC-1
+        scope: openid+profile
+        state: CfDJ8Fr2n1UxboNJlI8uHVA4skryuRiPt-1-mhFSMYxXnAqQXXX
+        session_state: e35UPvqWXV_cxZ3bBNM-fZEpln9j5Qh4JrVxbX0L9is.28084428FDF3B4FCDC5EDB4D69D3DC4F
+        iss: https://localhost:5001
+    }
+*/
+```
+
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called (o3.2) to get access token and id token), also note that we lose "user = Emma" claim in this process because we use IdToken to generate ClaimsIdentity again and this idToken doesn't contain user name for most of time unless we configure it to. Finally, **Client calls `Context.SignInAsync()` to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
+
+Important thing to know, in the subsequent requst, only **user-to-client** cookie is needed for user to be authenticated, however if you develop logout functionality by only sign out this 
+user-to-client cooke, it will have issue shows below.
+
+8. A-Prerequisite knowledge for SignOut functionality , you have to do:
+
+```C#
+public class AuthenticationController : Controller
+{
+    [Authorize]
+    public async Task Logout()
+    {
+        // clears the local cookie
+        await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+        // clear IDP own session/cookie
+        await HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme); // <----------don't forget to call this one
+    }
+}
+```
+
+`HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme)` trigger below request (s flag):
+
+```C#
+/*
+https://localhost:5001/connect/endsession?post_logout_redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignout-callback-oidc&id_token_hint=eyJhbGciOiJSUzxxxx
+*/
+```
+
+and let's say you didn't clear IDP cookie, and after user click logout and request the resource again, at p1, the user is from IDP cookie, and at P2, it won't be `LoginPageResult` but `AuthorizeResult` (that's why users won't be showed with Login page again), then it just repeats step 6, 7, then user is still seems to be login
+
+A special note on the "user-to-idp cookie" and "user-to-client" cookie. the former is created first on the IdentityServer's end i.e Login page, so the claims will be the data on the signin form (especially the "user = Emma" claim which probably won't be in id token). "user-to-client" cookie however it is created based on id token from idp.
+
+So if you don't clear IDP own session/cookie, and request the resource, resource will be returned to your with no 401 error (bug), behind the scene`AuthorizationMiddleware` calls `OpenIdConnectHandler.HandleChallengeAsync()` to repeat the communication to idp, after  `https://localhost:7184/signin-oidc` is handled by client, Client calls `Context.SignInAsync()` again. If you request the reousrce again,  resource will be returned to you (still a bug), and this time `OpenIdConnectHandler.HandleChallengeAsync()` won't be called
+
+
+8. B-Signout process
+
+`https://localhost:5001/connect/endsession` is triggered (sot flag in `OpenIdConnectHandler.SignOutAsync()`),
+
+```C#
+/*  token_hint is the id token
+https://localhost:5001/connect/endsession?post_logout_redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignout-callback-oidc&id_token_hint=eyJhbGciOiJSUzI1Nxxxx
+*/
+```
+
+
+
+
+
+
+
+
+
+
+
+==========================================================================================
+
+```C#
+public abstract class Resource
+{
+    public bool Enabled { get; set; } = true;
+    public string Name { get; set; } = default!;
+    public string? DisplayName { get; set; }
+    public string? Description { get; set; }
+    public bool ShowInDiscoveryDocument { get; set; } = true;
+    public ICollection<string> UserClaims { get; set; } = new HashSet<string>();
+    public IDictionary<string, string> Properties { get; set; } = new Dictionary<string, string>();
+}
+```
+
+`Scope` is kind of a role to access a specific set of resources. IdentityServer has two scope types: 
+
+* **Identity Scope** : representing identity data (e.g. profile or email), goes to **id token**
+
+```C#
+public class IdentityResource : Resource
+{
+    public IdentityResource() { }
+
+    public IdentityResource(string name, IEnumerable<string> userClaims) : this(name, name, userClaims) { }
+
+    public IdentityResource(string name, string displayName, IEnumerable<string> userClaims)
+    {
+        Name = name;
+        DisplayName = displayName;
+
+        foreach(var type in userClaims)
+        {
+            UserClaims.Add(type);
+        }      
+    }
+
+    public bool Required { get; set; } = false;
+    public bool Emphasize { get; set; } = false;
+}
+
+public class OpenId : IdentityResource
+{
+    public OpenId()
+    {
+        Name = IdentityServerConstants.StandardScopes.OpenId;  // "openid"
+        DisplayName = "Your user identifier";
+        Required = true;
+        UserClaims.Add(JwtClaimTypes.Subject);
+    }
+}
+
+public class Profile : IdentityResource
+{
+    public Profile()
+    {
+        Name = IdentityServerConstants.StandardScopes.Profile;  // "profile"
+        DisplayName = "User profile";
+        Description = "Your user profile information (first name, last name, etc.)";
+        Emphasize = true;
+        UserClaims = Constants.ScopeToClaimsMapping[IdentityServerConstants.StandardScopes.Profile].ToList();
+    }
+}
+```
+
+* **Resource Scope** : representing a resource (e.g. a web api), goes to **access token**
+
+```C#
+public class ApiScope : Resource
+{
+    public ApiScope() { }
+    public ApiScope(string name) : this(name, name, null) { }
+    public ApiScope(string name, string displayName) : this(name, displayName, null) { }
+    public ApiScope(string name, IEnumerable<string> userClaims) : this(name, name, userClaims) { }
+    public ApiScope(string name, string displayName, IEnumerable<string>? userClaims)
+    {
+        Name = name;
+        DisplayName = displayName;
+
+        if (!userClaims.IsNullOrEmpty())
+        {
+            foreach (var type in userClaims!)
+            {
+                UserClaims.Add(type);
+            }
+        }
+    }
+
+    public bool Required { get; set; } = false;
+    public bool Emphasize { get; set; } = false;
+}
+```
+
+ApiResource
+
+```C#
+public class ApiResource : Resource
+{
+    public ApiResource() { }
+    public ApiResource(string name) : this(name, name, null) { }
+    public ApiResource(string name, string displayName) : this(name, displayName, null) { }
+    public ApiResource(string name, IEnumerable<string> userClaims) : this(name, name, userClaims) { }
+
+    public ApiResource(string name, string displayName, IEnumerable<string> userClaims)
+    {
+        Name = name;
+        DisplayName = displayName;
+
+        if (!userClaims.IsNullOrEmpty())
+        {
+            foreach (var type in userClaims)
+            {
+                UserClaims.Add(type);
+            }
+        }
+    }
+
+    public ICollection<Secret> ApiSecrets { get; set; } = new HashSet<Secret>();
+    public ICollection<string> Scopes { get; set; } = new HashSet<string>();
+    public ICollection<string> AllowedAccessTokenSigningAlgorithms { get; set; } = new HashSet<string>();
+}
+```
+
+===================================================================================================================================
+
+```C#
+//--------------------------------V IdentityServer runs on https://localhost:5001
+public class IdentityServerProgram
 {
     public static void Main(string[] args)
     {
@@ -10,32 +422,19 @@ public class Program
 
         builder.Services.AddRazorPages();
 
-        builder.Services.AddAuthentication(options =>
-        {
-            options.DefaultScheme = "Cookies";
-            options.DefaultChallengeScheme = "oidc";
-        })
-        .AddCookie("Cookies")
-        .AddOpenIdConnect("oidc", options =>
-        {
-            options.Authority = "https://localhost:5001";
-
-            options.ClientId = "web";
-            options.ClientSecret = "secret";
-            options.ResponseType = "code";
-
-            options.Scope.Clear();
-            options.Scope.Add("openid");
-            options.Scope.Add("profile");
-
-            options.MapInboundClaims = false;
-            options.SaveTokens = true;
-        });
+        builder.Services
+            .AddIdentityServer()
+            .AddInMemoryIdentityResources(Config.IdentityResources)
+            .AddInMemoryApiScopes(Config.ApiScopes)
+            .AddInMemoryClients(Config.Clients)
+            .AddTestUsers(TestUsers.Users);
 
         var app = builder.Build();
 
         app.UseRouting();
-        app.UseAuthentication();
+
+        app.UseIdentityServer();
+
         app.UseAuthorization();
 
         app.MapRazorPages().RequireAuthorization();
@@ -43,1534 +442,198 @@ public class Program
         app.Run();
     }
 }
-//------------------Ʌ
 
-//-------------------------------V
-public class OpenIdConnectOptions : RemoteAuthenticationOptions
+public static class Config
 {
-    private class OpenIdConnectNonceCookieBuilder : RequestPathBaseCookieBuilder
-    {
-        private readonly OpenIdConnectOptions _options;
-
-        protected override string AdditionalPath => _options.CallbackPath;
-
-        public OpenIdConnectNonceCookieBuilder(OpenIdConnectOptions oidcOptions)
-        {
-            _options = oidcOptions;
-        }
-
-        public override CookieOptions Build(HttpContext context, DateTimeOffset expiresFrom)
-        {
-            CookieOptions cookieOptions = base.Build(context, expiresFrom);
-            if (!Expiration.HasValue || !cookieOptions.Expires.HasValue)
+    public static IEnumerable<IdentityResource> IdentityResources =>
+        new IdentityResource[]
+        { 
+            new IdentityResources.OpenId(),  // subject id
+            new IdentityResources.Profile(),
+            new IdentityResource()
             {
-                cookieOptions.Expires = expiresFrom.Add(_options.ProtocolValidator.NonceLifetime);
+                Name = "verification",
+                UserClaims = new List<string>
+                {
+                    JwtClaimTypes.Email,
+                    JwtClaimTypes.EmailVerified
+                }
             }
-
-            return cookieOptions;
-        }
-    }
-
-    private CookieBuilder _nonceCookieBuilder;
-    private readonly JwtSecurityTokenHandler _defaultHandler = new JwtSecurityTokenHandler();
-
-    public string? Authority { get; set; }
-    public string? ClientId { get; set; }
-    public string? ClientSecret { get; set; }
-
-    public OpenIdConnectConfiguration? Configuration { get; set; }
-    public IConfigurationManager<OpenIdConnectConfiguration>? ConfigurationManager { get; set; }
-
-    public bool GetClaimsFromUserInfoEndpoint { get; set; }
-    public ClaimActionCollection ClaimActions { get; } = new ClaimActionCollection();
-
-    public bool RequireHttpsMetadata { get; set; } = true;
-    public string? MetadataAddress { get; set; }
-
-    public new OpenIdConnectEvents Events { get; set; }  // on base.Events
-
-    public TimeSpan? MaxAge { get; set; }
-
-    public OpenIdConnectProtocolValidator ProtocolValidator { get; set; } = new OpenIdConnectProtocolValidator
-    {
-        RequireStateValidation = false,
-        NonceLifetime = TimeSpan.FromMinutes(15.0)
-    };
-
-    public PathString SignedOutCallbackPath { get; set; }
-    public string SignedOutRedirectUri { get; set; } = "/";
-    public bool RefreshOnIssuerKeyNotFound { get; set; } = true;
-    public OpenIdConnectRedirectBehavior AuthenticationMethod { get; set; }
-
-    public string? Resource { get; set; }
-    public string ResponseMode { get; set; } = "form_post";
-    public string ResponseType { get; set; } = "id_token";
-
-    public string? Prompt { get; set; }
-    public ICollection<string> Scope { get; } = new HashSet<string>();
-    public PathString RemoteSignOutPath { get; set; }
-    public string? SignOutScheme { get; set; }
-    public ISecureDataFormat<AuthenticationProperties> StateDataFormat { get; set; }
-    public ISecureDataFormat<string> StringDataFormat { get; set; }
-    
-    public ISecurityTokenValidator SecurityTokenValidator { get; set; }
-    public TokenValidationParameters TokenValidationParameters { get; set; } = new TokenValidationParameters();
-
-    public bool UseTokenLifetime { get; set; }
-    public bool SkipUnrecognizedRequests { get; set; }
-    public bool DisableTelemetry { get; set; }
-
-    public CookieBuilder NonceCookie { get; set; }  // on _nonceCookieBuilder
-    public bool UsePkce { get; set; } = true;
-
-    public TimeSpan AutomaticRefreshInterval { get; set; } = ConfigurationManager<OpenIdConnectConfiguration>.DefaultAutomaticRefreshInterval;
-    public TimeSpan RefreshInterval { get; set; } = ConfigurationManager<OpenIdConnectConfiguration>.DefaultRefreshInterval;
-
-    public bool MapInboundClaims { get; set; }  // on _defaultHandler.MapInboundClaims
-
-    public OpenIdConnectOptions()
-    {
-        base.CallbackPath = new PathString("/signin-oidc");
-        SignedOutCallbackPath = new PathString("/signout-callback-oidc");
-        RemoteSignOutPath = new PathString("/signout-oidc");
-        SecurityTokenValidator = _defaultHandler;
-        Events = new OpenIdConnectEvents();
-        Scope.Add("openid"); Scope.Add("profile");
-        ClaimActions.DeleteClaim("nonce"); ClaimActions.DeleteClaim("aud"); ClaimActions.DeleteClaim("azp"); ClaimActions.DeleteClaim("acr");
-        ClaimActions.DeleteClaim("iss"); ClaimActions.DeleteClaim("iat"); ClaimActions.DeleteClaim("nbf"); ClaimActions.DeleteClaim("exp");
-        ClaimActions.DeleteClaim("at_hash"); ClaimActions.DeleteClaim("c_hash"); ClaimActions.DeleteClaim("ipaddr"); ClaimActions.DeleteClaim("platf");
-        ClaimActions.DeleteClaim("ver");ClaimActions.MapUniqueJsonKey("sub", "sub"); ClaimActions.MapUniqueJsonKey("name", "name");
-        ClaimActions.MapUniqueJsonKey("given_name", "given_name"); ClaimActions.MapUniqueJsonKey("family_name", "family_name");
-        ClaimActions.MapUniqueJsonKey("profile", "profile"); ClaimActions.MapUniqueJsonKey("email", "email");
-        _nonceCookieBuilder = new OpenIdConnectNonceCookieBuilder(this)
-        {
-            Name = OpenIdConnectDefaults.CookieNoncePrefix,
-            HttpOnly = true,
-            SameSite = SameSiteMode.None,
-            SecurePolicy = CookieSecurePolicy.SameAsRequest,
-            IsEssential = true
         };
-    }
 
-    public override void Validate()
-    {     
-        base.Validate();
-        // ... validate  MaxAge.HasValue && MaxAge.Value < TimeSpan.Zero, IsNullOrEmpty on ClientId, CallbackPath.HasValue, ConfigurationManager     
-    }
-}
-//-------------------------------Ʌ
-
-//--------------------------------------V
-public class RemoteAuthenticationOptions : AuthenticationSchemeOptions
-{
-    private const string CorrelationPrefix = ".AspNetCore.Correlation.";
-
-    private CookieBuilder _correlationCookieBuilder;
-
-    public RemoteAuthenticationOptions()
-    {
-        _correlationCookieBuilder = new CorrelationCookieBuilder(this)
-        {
-            Name = CorrelationPrefix,
-            HttpOnly = true,
-            SameSite = SameSiteMode.None,
-            SecurePolicy = CookieSecurePolicy.SameAsRequest,
-            IsEssential = true,
+    public static IEnumerable<ApiScope> ApiScopes =>
+        new List<ApiScope>
+        { 
+            new ApiScope("api1", "My API")
         };
-    }
 
-    public override void Validate(string scheme)
-    {
-        base.Validate(scheme);
-        if (string.Equals(scheme, SignInScheme, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(Resources.Exception_RemoteSignInSchemeCannotBeSelf);
-        }
-    }
-
-    public override void Validate()
-    {
-        base.Validate();
-        if (CallbackPath == null || !CallbackPath.HasValue)
-        {
-            throw new ArgumentException(Resources.FormatException_OptionMustBeProvided(nameof(CallbackPath)), nameof(CallbackPath));
-        }
-    }
-
-    public TimeSpan BackchannelTimeout { get; set; } = TimeSpan.FromSeconds(60);
-
-    public HttpMessageHandler? BackchannelHttpHandler { get; set; }
-
-    public HttpClient Backchannel { get; set; } = default!;
-
-    public IDataProtectionProvider? DataProtectionProvider { get; set; }
-
-    public PathString CallbackPath { get; set; }
-
-    public PathString AccessDeniedPath { get; set; }
-
-    public string ReturnUrlParameter { get; set; } = "ReturnUrl";
-
-    public string? SignInScheme { get; set; }
-
-    public TimeSpan RemoteAuthenticationTimeout { get; set; } = TimeSpan.FromMinutes(15);
-
-    public new RemoteAuthenticationEvents Events
-    {
-        get => (RemoteAuthenticationEvents)base.Events!;
-        set => base.Events = value;
-    }
-
-    public bool SaveTokens { get; set; }
-
-    public CookieBuilder CorrelationCookie { get; set; }  // on _correlationCookieBuilder
-    
-    private class CorrelationCookieBuilder : RequestPathBaseCookieBuilder
-    {
-        private readonly RemoteAuthenticationOptions _options;
-
-        public CorrelationCookieBuilder(RemoteAuthenticationOptions remoteAuthenticationOptions)
-        {
-            _options = remoteAuthenticationOptions;
-        }
-
-        protected override string AdditionalPath => _options.CallbackPath;
-
-        public override CookieOptions Build(HttpContext context, DateTimeOffset expiresFrom)
-        {
-            var cookieOptions = base.Build(context, expiresFrom);
-
-            if (!Expiration.HasValue || !cookieOptions.Expires.HasValue)
+    public static IEnumerable<Client> Clients =>
+        new List<Client>
+        { 
+            new Client  // machine to machine client (from quickstart 1)
             {
-                cookieOptions.Expires = expiresFrom.Add(_options.RemoteAuthenticationTimeout);
-            }
+                ClientId = "client",                                          
+                ClientSecrets = {
+                    new Secret("secret".Sha256())
+                },
 
-            return cookieOptions;
-        }
-    }
+                AllowedGrantTypes = GrantTypes.ClientCredentials,
+
+                // scopes that client has access to
+                AllowedScopes = { "api1" }
+            },
+            // interactive ASP.NET Core Web App
+            new Client
+            {
+                ClientId = "web",
+                ClientSecrets = { new Secret("secret".Sha256()) },
+
+                AllowedGrantTypes = GrantTypes.Code,
+
+                // where to redirect to after login
+                RedirectUris = { "https://localhost:5002/signin-oidc" },
+                // where to redirect to after logout
+                PostLogoutRedirectUris = { "https://localhost:5002/signout-callback-oidc" },
+
+                AllowedScopes =
+                {
+                    IdentityServerConstants.StandardScopes.OpenId,
+                    IdentityServerConstants.StandardScopes.Profile,
+                    "verification"
+                }
+            }
+        };
 }
-//--------------------------------------Ʌ
+//--------------------------------Ʌ dentityServer
 ```
 
 ```C#
-//----------------------------------------->>
-public static class OpenIdConnectExtensions
+//----------------------V Api
+public class ApiProgram   // runs on port 6001
 {
-    public static AuthenticationBuilder AddOpenIdConnect(this AuthenticationBuilder builder, Action<OpenIdConnectOptions> configureOptions)
+    public static void Main(string[] args)
     {
-        return builder.AddOpenIdConnect("OpenIdConnect", configureOptions);
-    }
+        var builder = WebApplication.CreateBuilder(args);
 
-    public static AuthenticationBuilder AddOpenIdConnect(this AuthenticationBuilder builder, string authenticationScheme, string? displayName, Action<OpenIdConnectOptions> configureOptions)
-    {
-        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<OpenIdConnectOptions>, OpenIdConnectPostConfigureOptions>());
-        return builder.AddRemoteScheme<OpenIdConnectOptions, OpenIdConnectHandler>(authenticationScheme, displayName, configureOptions);
+        builder.Services.AddControllers();
+        builder.Services.AddEndpointsApiExplorer();
+        builder.Services.AddSwaggerGen();
+
+        builder.Services
+            .AddAuthentication("Bearer")
+            .AddJwtBearer("Bearer", options =>
+            {
+                options.Authority = "https://localhost:5001";  // IdentityServer runs on 5001
+
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateAudience = false
+                };
+            });
+
+        builder.Services.AddAuthorization(options =>
+        {
+            options.AddPolicy("ApiScope", policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.RequireClaim("scope", "api1");
+            });
+        });
+
+        var app = builder.Build();
+
+        app.UseAuthentication();
+        app.UseAuthorization();
+
+        app.MapGet("identity", (ClaimsPrincipal user) => user.Claims.Select(c => new { c.Type, c.Value }))
+            .RequireAuthorization("ApiScope");  // ApiScope is the policy name
+
+        app.Run();
     }
 }
-//-----------------------------------------<<
+//----------------------Ʌ Api
 ```
 
 ```C#
-//-------------------------------V
-public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOptions>, IAuthenticationSignOutHandler, IAuthenticationHandler
+//-------------------------V Client, uses the IdentityModel nuget package
+public class ClientProgram
 {
-    private const string NonceProperty = "N";
-
-    private const string HeaderValueEpocDate = "Thu, 01 Jan 1970 00:00:00 GMT";
-
-    private OpenIdConnectConfiguration _configuration;
-
-    protected HttpClient Backchannel => base.Options.Backchannel;
-
-    protected HtmlEncoder HtmlEncoder { get; }
-
-    protected new OpenIdConnectEvents Events
+    public static async Task Main(string[] args)
     {
-        get
+        var client = new HttpClient();
+
+        DiscoveryDocumentResponse disco = await client.GetDiscoveryDocumentAsync("https://localhost:5001");
+
+        if (disco.IsError)
         {
-            return (OpenIdConnectEvents)base.Events;
-        }
-        set
-        {
-            base.Events = value;
-        }
-    }
-
-    public OpenIdConnectHandler(IOptionsMonitor<OpenIdConnectOptions> options, ILoggerFactory logger, HtmlEncoder htmlEncoder, UrlEncoder encoder, ISystemClock clock)
-        : base(options, logger, encoder, clock)
-    {
-        HtmlEncoder = htmlEncoder;
-    }
-
-    protected override Task<object> CreateEventsAsync()
-    {
-        return Task.FromResult((object)new OpenIdConnectEvents());
-    }
-
-    public override Task<bool> HandleRequestAsync()
-    {
-        if (base.Options.RemoteSignOutPath.HasValue && base.Options.RemoteSignOutPath == base.Request.Path)
-        {
-            return HandleRemoteSignOutAsync();
-        }
-
-        if (base.Options.SignedOutCallbackPath.HasValue && base.Options.SignedOutCallbackPath == base.Request.Path)
-        {
-            return HandleSignOutCallbackAsync();
-        }
-
-        return base.HandleRequestAsync();
-    }
-
-    protected virtual async Task<bool> HandleRemoteSignOutAsync()
-    {
-        OpenIdConnectMessage message = null;
-        if (HttpMethods.IsGet(base.Request.Method))
-        {
-            message = new OpenIdConnectMessage(base.Request.Query.Select<KeyValuePair<string, StringValues>, KeyValuePair<string, string[]>>((KeyValuePair<string, StringValues> pair) => new KeyValuePair<string, string[]>(pair.Key, pair.Value)));
-        }
-        else if (HttpMethods.IsPost(base.Request.Method) && !string.IsNullOrEmpty(base.Request.ContentType) && base.Request.ContentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase) && base.Request.Body.CanRead)
-        {
-            message = new OpenIdConnectMessage((await base.Request.ReadFormAsync(base.Context.RequestAborted)).Select<KeyValuePair<string, StringValues>, KeyValuePair<string, string[]>>((KeyValuePair<string, StringValues> pair) => new KeyValuePair<string, string[]>(pair.Key, pair.Value)));
-        }
-
-        RemoteSignOutContext remoteSignOutContext = new RemoteSignOutContext(base.Context, base.Scheme, base.Options, message);
-        await Events.RemoteSignOut(remoteSignOutContext);
-        if (remoteSignOutContext.Result != null)
-        {
-            if (remoteSignOutContext.Result.Handled)
-            {
-                base.Logger.RemoteSignOutHandledResponse();
-                return true;
-            }
-
-            if (remoteSignOutContext.Result.Skipped)
-            {
-                base.Logger.RemoteSignOutSkipped();
-                return false;
-            }
-
-            if (remoteSignOutContext.Result.Failure != null)
-            {
-                throw new InvalidOperationException("An error was returned from the RemoteSignOut event.", remoteSignOutContext.Result.Failure);
-            }
-        }
-
-        if (message == null)
-        {
-            return false;
-        }
-
-        ClaimsPrincipal claimsPrincipal = (await base.Context.AuthenticateAsync(base.Options.SignOutScheme))?.Principal;
-        string text = claimsPrincipal?.FindFirst("sid")?.Value;
-        if (!string.IsNullOrEmpty(text))
-        {
-            if (string.IsNullOrEmpty(message.Sid))
-            {
-                base.Logger.RemoteSignOutSessionIdMissing();
-                return true;
-            }
-
-            if (!string.Equals(text, message.Sid, StringComparison.Ordinal))
-            {
-                base.Logger.RemoteSignOutSessionIdInvalid();
-                return true;
-            }
-        }
-
-        string text2 = claimsPrincipal?.FindFirst("iss")?.Value;
-        if (!string.IsNullOrEmpty(text2))
-        {
-            if (string.IsNullOrEmpty(message.Iss))
-            {
-                base.Logger.RemoteSignOutIssuerMissing();
-                return true;
-            }
-
-            if (!string.Equals(text2, message.Iss, StringComparison.Ordinal))
-            {
-                base.Logger.RemoteSignOutIssuerInvalid();
-                return true;
-            }
-        }
-
-        base.Logger.RemoteSignOut();
-        await base.Context.SignOutAsync(base.Options.SignOutScheme);
-        return true;
-    }
-
-    public virtual async Task SignOutAsync(AuthenticationProperties? properties)
-    {
-        string text = ResolveTarget(base.Options.ForwardSignOut);
-        if (text != null)
-        {
-            await base.Context.SignOutAsync(text, properties);
+            Console.WriteLine(disco.Error);
             return;
         }
 
-        if (properties == null)
+        // request access token
+        var tokenResponse = await client.RequestClientCredentialsTokenAsync(new ClientCredentialsTokenRequest
         {
-            properties = new AuthenticationProperties();
-        }
+            Address = disco.TokenEndpoint,  // https://localhost:5001/connect/token
 
-        base.Logger.EnteringOpenIdAuthenticationHandlerHandleSignOutAsync(GetType().FullName);
-        if (_configuration == null && base.Options.ConfigurationManager != null)
-        {
-            _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);
-        }
+            ClientId = "client",
+            ClientSecret = "secret",
+            Scope = "api1"
+        });
 
-        OpenIdConnectMessage message = new OpenIdConnectMessage
+        if (tokenResponse.IsError)  // AccessToken is always non-null when IsError is false
         {
-            EnableTelemetryParameters = !base.Options.DisableTelemetry,
-            IssuerAddress = (_configuration?.EndSessionEndpoint ?? string.Empty),
-            PostLogoutRedirectUri = BuildRedirectUriIfRelative(base.Options.SignedOutCallbackPath)
-        };
-        if (string.IsNullOrEmpty(properties.RedirectUri))
-        {
-            properties.RedirectUri = BuildRedirectUriIfRelative(base.Options.SignedOutRedirectUri);
-            if (string.IsNullOrWhiteSpace(properties.RedirectUri))
-            {
-                properties.RedirectUri = base.OriginalPathBase + base.OriginalPath + base.Request.QueryString;
-            }
-        }
-
-        base.Logger.PostSignOutRedirect(properties.RedirectUri);
-        OpenIdConnectMessage openIdConnectMessage = message;
-        openIdConnectMessage.IdTokenHint = await base.Context.GetTokenAsync(base.Options.SignOutScheme, "id_token");
-        RedirectContext redirectContext = new RedirectContext(base.Context, base.Scheme, base.Options, properties)
-        {
-            ProtocolMessage = message
-        };
-        await Events.RedirectToIdentityProviderForSignOut(redirectContext);
-        if (redirectContext.Handled)
-        {
-            base.Logger.RedirectToIdentityProviderForSignOutHandledResponse();
+            Console.WriteLine(tokenResponse.Error);
             return;
         }
 
-        message = redirectContext.ProtocolMessage;
-        if (!string.IsNullOrEmpty(message.State))
-        {
-            properties.Items[OpenIdConnectDefaults.UserstatePropertiesKey] = message.State;
-        }
+        Console.WriteLine(tokenResponse.Json);
 
-        message.State = base.Options.StateDataFormat.Protect(properties);
-        if (string.IsNullOrEmpty(message.IssuerAddress))
-        {
-            throw new InvalidOperationException("Cannot redirect to the end session endpoint, the configuration may be missing or invalid.");
-        }
+        <!-- #region access_token decoded-->
+        /*
 
-        if (base.Options.AuthenticationMethod == OpenIdConnectRedirectBehavior.RedirectGet)
-        {
-            string text2 = message.CreateLogoutRequestUrl();
-            if (!Uri.IsWellFormedUriString(text2, UriKind.Absolute))
-            {
-                base.Logger.InvalidLogoutQueryStringRedirectUrl(text2);
-            }
+         {
+           "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjhFNjFCRTk2NEFCQUM5NkVEMDU2RDQ5M0RCODQ3M0E2IiwidHlwIjoiYXQrand0In0.eyJpcMiOiJodHRwczovL2xvY2FsaG9zdDo1MDAxIiwibmJmIjoxNzIwNjE5MjczLCJpYXQiOjE3MjA2MTkyNzMsImV4cCI6MTcyMDYyMjg3Mywic2NvcGUiOlsiYXBpMSJdLCJjbGllbnRfaWQiOiJjbGllbnQiLCJqdGkiOiI4NTBEODIzNUFCRTVERkQwQTJFOTE3MjEyODFDNzE1QyJ9.TPF3XuEpz-HgkIAxpsXKzRBZcyALNiQsK_cCBYHV-qrEiND0zZm7wffqUEXr3OeCNU0uiF06Fs3IBAGcNW6nLCp7vHDi-zCidqD8hTGg1tUCxOzDttltzcDF7CyvK81ZaJUb-KOz1Pivi8GfmKcFeV8hK_UfFSPjqh8BAQtQlbyJCdK2eYFbML3lcujzFDtitP4v5kpq3B6m_cx9xnOQ3fUK2Q8ve7f7DZgWLM51dwkyu11nWliRRcZQBsu5GT9EhmqTiB69y8PsV6mAYbhSb5BKN0YelV2RU5G89wVYoxQPYvNUP5TDOdI-XEgRX2mKYMKy_Ilf60q_KkqAGgilHQ",
+           "expires_in": 3600,
+           "token_type": "Bearer",
+           "scope": "api1"           
+         }
 
-            base.Response.Redirect(text2);
+         access_token decoded:
+
+         {
+           "alg": "RS256",
+           "kid": "8E61BE964ABAC96ED056D493DB8473A6",
+           "typ": "at+jwt"
+         }.{
+           "iss": "https://localhost:5001",
+           "nbf": 1720619273,
+           "iat": 1720619273,
+           "exp": 1720622873,
+           "scope": [
+             "api1"
+           ],
+           "client_id": "client",
+           "jti": "850D8235ABE5DFD0A2E91721281C715C"
+         }.[Signature]
+
+        */
+       <!-- #endregion -->
+
+        // call api
+        var apiClient = new HttpClient();
+        apiClient.SetBearerToken(tokenResponse.AccessToken);
+
+        var response = await apiClient.GetAsync("https://localhost:6001/identity");
+        if (!response.IsSuccessStatusCode)
+        {
+            Console.WriteLine(response.StatusCode);
         }
         else
         {
-            if (base.Options.AuthenticationMethod != OpenIdConnectRedirectBehavior.FormPost)
-            {
-                throw new NotImplementedException($"An unsupported authentication method has been configured: {base.Options.AuthenticationMethod}");
-            }
-
-            string s = message.BuildFormPost();
-            byte[] bytes = Encoding.UTF8.GetBytes(s);
-            base.Response.ContentLength = bytes.Length;
-            base.Response.ContentType = "text/html;charset=UTF-8";
-            base.Response.Headers.CacheControl = "no-cache, no-store";
-            base.Response.Headers.Pragma = "no-cache";
-            base.Response.Headers.Expires = "Thu, 01 Jan 1970 00:00:00 GMT";
-            await base.Response.Body.WriteAsync(bytes);
+            var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+            Console.WriteLine(JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true }));
         }
-
-        base.Logger.AuthenticationSchemeSignedOut(base.Scheme.Name);
-    }
-
-    protected virtual async Task<bool> HandleSignOutCallbackAsync()
-    {
-        OpenIdConnectMessage openIdConnectMessage = new OpenIdConnectMessage(base.Request.Query.Select<KeyValuePair<string, StringValues>, KeyValuePair<string, string[]>>((KeyValuePair<string, StringValues> pair) => new KeyValuePair<string, string[]>(pair.Key, pair.Value)));
-        AuthenticationProperties properties = null;
-        if (!string.IsNullOrEmpty(openIdConnectMessage.State))
-        {
-            properties = base.Options.StateDataFormat.Unprotect(openIdConnectMessage.State);
-        }
-
-        RemoteSignOutContext signOut = new RemoteSignOutContext(base.Context, base.Scheme, base.Options, openIdConnectMessage)
-        {
-            Properties = properties
-        };
-        await Events.SignedOutCallbackRedirect(signOut);
-        if (signOut.Result != null)
-        {
-            if (signOut.Result.Handled)
-            {
-                base.Logger.SignOutCallbackRedirectHandledResponse();
-                return true;
-            }
-
-            if (signOut.Result.Skipped)
-            {
-                base.Logger.SignOutCallbackRedirectSkipped();
-                return false;
-            }
-
-            if (signOut.Result.Failure != null)
-            {
-                throw new InvalidOperationException("An error was returned from the SignedOutCallbackRedirect event.", signOut.Result.Failure);
-            }
-        }
-
-        properties = signOut.Properties;
-        if (!string.IsNullOrEmpty(properties?.RedirectUri))
-        {
-            base.Response.Redirect(properties.RedirectUri);
-        }
-
-        return true;
-    }
-
-    protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
-    {
-        await HandleChallengeAsyncInternal(properties);
-        StringValues stringValues = base.Context.Response.Headers.Location;
-        if (stringValues == StringValues.Empty)
-        {
-            stringValues = "(not set)";
-        }
-
-        StringValues stringValues2 = base.Context.Response.Headers.SetCookie;
-        if (stringValues2 == StringValues.Empty)
-        {
-            stringValues2 = "(not set)";
-        }
-
-        base.Logger.HandleChallenge(stringValues, stringValues2);
-    }
-
-    private async Task HandleChallengeAsyncInternal(AuthenticationProperties properties)
-    {
-        base.Logger.EnteringOpenIdAuthenticationHandlerHandleUnauthorizedAsync(GetType().FullName);
-        if (string.IsNullOrEmpty(properties.RedirectUri))
-        {
-            properties.RedirectUri = base.OriginalPathBase + base.OriginalPath + base.Request.QueryString;
-        }
-
-        base.Logger.PostAuthenticationLocalRedirect(properties.RedirectUri);
-        if (_configuration == null && base.Options.ConfigurationManager != null)
-        {
-            _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);
-        }
-
-        OpenIdConnectMessage openIdConnectMessage = new OpenIdConnectMessage
-        {
-            ClientId = base.Options.ClientId,
-            EnableTelemetryParameters = !base.Options.DisableTelemetry,
-            IssuerAddress = (_configuration?.AuthorizationEndpoint ?? string.Empty),
-            RedirectUri = BuildRedirectUri(base.Options.CallbackPath),
-            Resource = base.Options.Resource,
-            ResponseType = base.Options.ResponseType,
-            Prompt = (properties.GetParameter<string>("prompt") ?? base.Options.Prompt),
-            Scope = string.Join(" ", properties.GetParameter<ICollection<string>>("scope") ?? base.Options.Scope)
-        };
-        if (base.Options.UsePkce && base.Options.ResponseType == "code")
-        {
-            byte[] array = new byte[32];
-            RandomNumberGenerator.Fill(array);
-            string text = Base64UrlTextEncoder.Encode(array);
-            properties.Items.Add(OAuthConstants.CodeVerifierKey, text);
-            string value = WebEncoders.Base64UrlEncode(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
-            openIdConnectMessage.Parameters.Add(OAuthConstants.CodeChallengeKey, value);
-            openIdConnectMessage.Parameters.Add(OAuthConstants.CodeChallengeMethodKey, OAuthConstants.CodeChallengeMethodS256);
-        }
-
-        TimeSpan? timeSpan = properties.GetParameter<TimeSpan?>("max_age") ?? base.Options.MaxAge;
-        if (timeSpan.HasValue)
-        {
-            openIdConnectMessage.MaxAge = Convert.ToInt64(Math.Floor(timeSpan.Value.TotalSeconds)).ToString(CultureInfo.InvariantCulture);
-        }
-
-        if (!string.Equals(base.Options.ResponseType, "code", StringComparison.Ordinal) || !string.Equals(base.Options.ResponseMode, "query", StringComparison.Ordinal))
-        {
-            openIdConnectMessage.ResponseMode = base.Options.ResponseMode;
-        }
-
-        if (base.Options.ProtocolValidator.RequireNonce)
-        {
-            openIdConnectMessage.Nonce = base.Options.ProtocolValidator.GenerateNonce();
-            WriteNonceCookie(openIdConnectMessage.Nonce);
-        }
-
-        GenerateCorrelationId(properties);
-        RedirectContext redirectContext = new RedirectContext(base.Context, base.Scheme, base.Options, properties)
-        {
-            ProtocolMessage = openIdConnectMessage
-        };
-        await Events.RedirectToIdentityProvider(redirectContext);
-        if (redirectContext.Handled)
-        {
-            base.Logger.RedirectToIdentityProviderHandledResponse();
-            return;
-        }
-
-        openIdConnectMessage = redirectContext.ProtocolMessage;
-        if (!string.IsNullOrEmpty(openIdConnectMessage.State))
-        {
-            properties.Items[OpenIdConnectDefaults.UserstatePropertiesKey] = openIdConnectMessage.State;
-        }
-
-        properties.Items.Add(OpenIdConnectDefaults.RedirectUriForCodePropertiesKey, openIdConnectMessage.RedirectUri);
-        openIdConnectMessage.State = base.Options.StateDataFormat.Protect(properties);
-        if (string.IsNullOrEmpty(openIdConnectMessage.IssuerAddress))
-        {
-            throw new InvalidOperationException("Cannot redirect to the authorization endpoint, the configuration may be missing or invalid.");
-        }
-
-        if (base.Options.AuthenticationMethod == OpenIdConnectRedirectBehavior.RedirectGet)
-        {
-            string text2 = openIdConnectMessage.CreateAuthenticationRequestUrl();
-            if (!Uri.IsWellFormedUriString(text2, UriKind.Absolute))
-            {
-                base.Logger.InvalidAuthenticationRequestUrl(text2);
-            }
-
-            base.Response.Redirect(text2);
-            return;
-        }
-
-        if (base.Options.AuthenticationMethod == OpenIdConnectRedirectBehavior.FormPost)
-        {
-            string s = openIdConnectMessage.BuildFormPost();
-            byte[] bytes = Encoding.UTF8.GetBytes(s);
-            base.Response.ContentLength = bytes.Length;
-            base.Response.ContentType = "text/html;charset=UTF-8";
-            base.Response.Headers.CacheControl = "no-cache, no-store";
-            base.Response.Headers.Pragma = "no-cache";
-            base.Response.Headers.Expires = "Thu, 01 Jan 1970 00:00:00 GMT";
-            await base.Response.Body.WriteAsync(bytes);
-            return;
-        }
-
-        throw new NotImplementedException($"An unsupported authentication method has been configured: {base.Options.AuthenticationMethod}");
-    }
-
-    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()
-    {
-        base.Logger.EnteringOpenIdAuthenticationHandlerHandleRemoteAuthenticateAsync(GetType().FullName);
-        OpenIdConnectMessage authorizationResponse = null;
-        if (HttpMethods.IsGet(base.Request.Method))
-        {
-            authorizationResponse = new OpenIdConnectMessage(base.Request.Query.Select<KeyValuePair<string, StringValues>, KeyValuePair<string, string[]>>((KeyValuePair<string, StringValues> pair) => new KeyValuePair<string, string[]>(pair.Key, pair.Value)));
-            if (!string.IsNullOrEmpty(authorizationResponse.IdToken) || !string.IsNullOrEmpty(authorizationResponse.AccessToken))
-            {
-                if (base.Options.SkipUnrecognizedRequests)
-                {
-                    return HandleRequestResult.SkipHandler();
-                }
-
-                return HandleRequestResult.Fail("An OpenID Connect response cannot contain an identity token or an access token when using response_mode=query");
-            }
-        }
-        else if (HttpMethods.IsPost(base.Request.Method) && !string.IsNullOrEmpty(base.Request.ContentType) && base.Request.ContentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase) && base.Request.Body.CanRead)
-        {
-            authorizationResponse = new OpenIdConnectMessage((await base.Request.ReadFormAsync(base.Context.RequestAborted)).Select<KeyValuePair<string, StringValues>, KeyValuePair<string, string[]>>((KeyValuePair<string, StringValues> pair) => new KeyValuePair<string, string[]>(pair.Key, pair.Value)));
-        }
-
-        if (authorizationResponse == null)
-        {
-            if (base.Options.SkipUnrecognizedRequests)
-            {
-                return HandleRequestResult.SkipHandler();
-            }
-
-            return HandleRequestResult.Fail("No message.");
-        }
-
-        AuthenticationProperties properties = null;
-        try
-        {
-            properties = ReadPropertiesAndClearState(authorizationResponse);
-            MessageReceivedContext messageReceivedContext = await RunMessageReceivedEventAsync(authorizationResponse, properties);
-            if (messageReceivedContext.Result != null)
-            {
-                return messageReceivedContext.Result;
-            }
-
-            authorizationResponse = messageReceivedContext.ProtocolMessage;
-            properties = messageReceivedContext.Properties;
-            if (properties == null || properties.Items.Count == 0)
-            {
-                if (string.IsNullOrEmpty(authorizationResponse.State))
-                {
-                    base.Logger.NullOrEmptyAuthorizationResponseState();
-                    if (base.Options.SkipUnrecognizedRequests)
-                    {
-                        return HandleRequestResult.SkipHandler();
-                    }
-
-                    return HandleRequestResult.Fail(Resources.MessageStateIsNullOrEmpty);
-                }
-
-                properties = ReadPropertiesAndClearState(authorizationResponse);
-            }
-
-            if (properties == null)
-            {
-                base.Logger.UnableToReadAuthorizationResponseState();
-                if (base.Options.SkipUnrecognizedRequests)
-                {
-                    return HandleRequestResult.SkipHandler();
-                }
-
-                return HandleRequestResult.Fail(Resources.MessageStateIsInvalid);
-            }
-
-            if (!ValidateCorrelationId(properties))
-            {
-                return HandleRequestResult.Fail("Correlation failed.", properties);
-            }
-
-            if (!string.IsNullOrEmpty(authorizationResponse.Error))
-            {
-                if (string.Equals(authorizationResponse.Error, "access_denied", StringComparison.Ordinal))
-                {
-                    HandleRequestResult handleRequestResult = await HandleAccessDeniedErrorAsync(properties);
-                    if (!handleRequestResult.None)
-                    {
-                        return handleRequestResult;
-                    }
-                }
-
-                return HandleRequestResult.Fail(CreateOpenIdConnectProtocolException(authorizationResponse, null), properties);
-            }
-
-            if (_configuration == null && base.Options.ConfigurationManager != null)
-            {
-                base.Logger.UpdatingConfiguration();
-                _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);
-            }
-
-            PopulateSessionProperties(authorizationResponse, properties);
-            ClaimsPrincipal user = null;
-            JwtSecurityToken jwt = null;
-            string nonce2 = null;
-            TokenValidationParameters validationParameters = base.Options.TokenValidationParameters.Clone();
-            if (!string.IsNullOrEmpty(authorizationResponse.IdToken))
-            {
-                base.Logger.ReceivedIdToken();
-                user = ValidateToken(authorizationResponse.IdToken, properties, validationParameters, out jwt);
-                nonce2 = jwt.Payload.Nonce;
-                if (!string.IsNullOrEmpty(nonce2))
-                {
-                    nonce2 = ReadNonceCookie(nonce2);
-                }
-
-                TokenValidatedContext tokenValidatedContext = await RunTokenValidatedEventAsync(authorizationResponse, null, user, properties, jwt, nonce2);
-                if (tokenValidatedContext.Result != null)
-                {
-                    return tokenValidatedContext.Result;
-                }
-
-                authorizationResponse = tokenValidatedContext.ProtocolMessage;
-                user = tokenValidatedContext.Principal;
-                properties = tokenValidatedContext.Properties;
-                jwt = tokenValidatedContext.SecurityToken;
-                nonce2 = tokenValidatedContext.Nonce;
-            }
-
-            base.Options.ProtocolValidator.ValidateAuthenticationResponse(new OpenIdConnectProtocolValidationContext
-            {
-                ClientId = base.Options.ClientId,
-                ProtocolMessage = authorizationResponse,
-                ValidatedIdToken = jwt,
-                Nonce = nonce2
-            });
-            OpenIdConnectMessage openIdConnectMessage = null;
-            if (!string.IsNullOrEmpty(authorizationResponse.Code))
-            {
-                AuthorizationCodeReceivedContext authorizationCodeReceivedContext = await RunAuthorizationCodeReceivedEventAsync(authorizationResponse, user, properties, jwt);
-                if (authorizationCodeReceivedContext.Result != null)
-                {
-                    return authorizationCodeReceivedContext.Result;
-                }
-
-                authorizationResponse = authorizationCodeReceivedContext.ProtocolMessage;
-                user = authorizationCodeReceivedContext.Principal;
-                properties = authorizationCodeReceivedContext.Properties;
-                OpenIdConnectMessage tokenEndpointRequest = authorizationCodeReceivedContext.TokenEndpointRequest;
-                openIdConnectMessage = authorizationCodeReceivedContext.TokenEndpointResponse;
-                jwt = authorizationCodeReceivedContext.JwtSecurityToken;
-                if (!authorizationCodeReceivedContext.HandledCodeRedemption)
-                {
-                    openIdConnectMessage = await RedeemAuthorizationCodeAsync(tokenEndpointRequest);
-                }
-
-                TokenResponseReceivedContext tokenResponseReceivedContext = await RunTokenResponseReceivedEventAsync(authorizationResponse, openIdConnectMessage, user, properties);
-                if (tokenResponseReceivedContext.Result != null)
-                {
-                    return tokenResponseReceivedContext.Result;
-                }
-
-                authorizationResponse = tokenResponseReceivedContext.ProtocolMessage;
-                openIdConnectMessage = tokenResponseReceivedContext.TokenEndpointResponse;
-                user = tokenResponseReceivedContext.Principal;
-                properties = tokenResponseReceivedContext.Properties;
-                validationParameters.RequireSignedTokens = false;
-                JwtSecurityToken jwt3;
-                ClaimsPrincipal user4 = ValidateToken(openIdConnectMessage.IdToken, properties, validationParameters, out jwt3);
-                if (user == null)
-                {
-                    nonce2 = jwt3.Payload.Nonce;
-                    if (!string.IsNullOrEmpty(nonce2))
-                    {
-                        nonce2 = ReadNonceCookie(nonce2);
-                    }
-
-                    TokenValidatedContext tokenValidatedContext2 = await RunTokenValidatedEventAsync(authorizationResponse, openIdConnectMessage, user4, properties, jwt3, nonce2);
-                    if (tokenValidatedContext2.Result != null)
-                    {
-                        return tokenValidatedContext2.Result;
-                    }
-
-                    authorizationResponse = tokenValidatedContext2.ProtocolMessage;
-                    openIdConnectMessage = tokenValidatedContext2.TokenEndpointResponse;
-                    user = tokenValidatedContext2.Principal;
-                    properties = tokenValidatedContext2.Properties;
-                    jwt = tokenValidatedContext2.SecurityToken;
-                    nonce2 = tokenValidatedContext2.Nonce;
-                }
-                else
-                {
-                    if (!string.Equals(jwt.Subject, jwt3.Subject, StringComparison.Ordinal))
-                    {
-                        throw new SecurityTokenException("The sub claim does not match in the id_token's from the authorization and token endpoints.");
-                    }
-
-                    jwt = jwt3;
-                }
-
-                if (!authorizationCodeReceivedContext.HandledCodeRedemption)
-                {
-                    base.Options.ProtocolValidator.ValidateTokenResponse(new OpenIdConnectProtocolValidationContext
-                    {
-                        ClientId = base.Options.ClientId,
-                        ProtocolMessage = openIdConnectMessage,
-                        ValidatedIdToken = jwt,
-                        Nonce = nonce2
-                    });
-                }
-            }
-
-            if (base.Options.SaveTokens)
-            {
-                SaveTokens(properties, openIdConnectMessage ?? authorizationResponse);
-            }
-
-            if (base.Options.GetClaimsFromUserInfoEndpoint)
-            {
-                return await GetUserInformationAsync(openIdConnectMessage ?? authorizationResponse, jwt, user, properties);
-            }
-
-            using (JsonDocument jsonDocument = JsonDocument.Parse("{}"))
-            {
-                ClaimsIdentity identity = (ClaimsIdentity)user.Identity;
-                foreach (ClaimAction claimAction in base.Options.ClaimActions)
-                {
-                    claimAction.Run(jsonDocument.RootElement, identity, ClaimsIssuer);
-                }
-            }
-
-            return HandleRequestResult.Success(new AuthenticationTicket(user, properties, base.Scheme.Name));
-        }
-        catch (Exception exception)
-        {
-            base.Logger.ExceptionProcessingMessage(exception);
-            if (base.Options.RefreshOnIssuerKeyNotFound && exception is SecurityTokenSignatureKeyNotFoundException && base.Options.ConfigurationManager != null)
-            {
-                base.Logger.ConfigurationManagerRequestRefreshCalled();
-                base.Options.ConfigurationManager.RequestRefresh();
-            }
-
-            AuthenticationFailedContext authenticationFailedContext = await RunAuthenticationFailedEventAsync(authorizationResponse, exception);
-            if (authenticationFailedContext.Result != null)
-            {
-                return authenticationFailedContext.Result;
-            }
-
-            return HandleRequestResult.Fail(exception, properties);
-        }
-    }
-
-    private AuthenticationProperties ReadPropertiesAndClearState(OpenIdConnectMessage message)
-    {
-        AuthenticationProperties authenticationProperties = null;
-        if (!string.IsNullOrEmpty(message.State))
-        {
-            authenticationProperties = base.Options.StateDataFormat.Unprotect(message.State);
-            if (authenticationProperties != null)
-            {
-                authenticationProperties.Items.TryGetValue(OpenIdConnectDefaults.UserstatePropertiesKey, out string value);
-                message.State = value;
-            }
-        }
-
-        return authenticationProperties;
-    }
-
-    private void PopulateSessionProperties(OpenIdConnectMessage message, AuthenticationProperties properties)
-    {
-        if (!string.IsNullOrEmpty(message.SessionState))
-        {
-            properties.Items[".sessionState"] = message.SessionState;
-        }
-
-        if (!string.IsNullOrEmpty(_configuration?.CheckSessionIframe))
-        {
-            properties.Items[".checkSessionIFrame"] = _configuration.CheckSessionIframe;
-        }
-    }
-
-    protected virtual async Task<OpenIdConnectMessage> RedeemAuthorizationCodeAsync(OpenIdConnectMessage tokenEndpointRequest)
-    {
-        base.Logger.RedeemingCodeForTokens();
-        HttpRequestMessage httpRequestMessage = new HttpRequestMessage(HttpMethod.Post, tokenEndpointRequest.TokenEndpoint ?? _configuration?.TokenEndpoint);
-        httpRequestMessage.Content = new FormUrlEncodedContent(tokenEndpointRequest.Parameters);
-        httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
-        HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);
-        string text = responseMessage.Content.Headers.ContentType?.MediaType;
-        if (string.IsNullOrEmpty(text))
-        {
-            base.Logger.LogDebug($"Unexpected token response format. Status Code: {responseMessage.StatusCode}. Content-Type header is missing.");
-        }
-        else if (!string.Equals(text, "application/json", StringComparison.OrdinalIgnoreCase))
-        {
-            base.Logger.LogDebug($"Unexpected token response format. Status Code: {responseMessage.StatusCode}. Content-Type {responseMessage.Content.Headers.ContentType}.");
-        }
-
-        OpenIdConnectMessage openIdConnectMessage;
-        try
-        {
-            openIdConnectMessage = new OpenIdConnectMessage(await responseMessage.Content.ReadAsStringAsync(base.Context.RequestAborted));
-        }
-        catch (Exception innerException)
-        {
-            throw new OpenIdConnectProtocolException($"Failed to parse token response body as JSON. Status Code: {responseMessage.StatusCode}. Content-Type: {responseMessage.Content.Headers.ContentType}", innerException);
-        }
-
-        if (!responseMessage.IsSuccessStatusCode)
-        {
-            throw CreateOpenIdConnectProtocolException(openIdConnectMessage, responseMessage);
-        }
-
-        return openIdConnectMessage;
-    }
-
-    protected virtual async Task<HandleRequestResult> GetUserInformationAsync(OpenIdConnectMessage message, JwtSecurityToken jwt, ClaimsPrincipal principal, AuthenticationProperties properties)
-    {
-        string text = _configuration?.UserInfoEndpoint;
-        if (string.IsNullOrEmpty(text))
-        {
-            base.Logger.UserInfoEndpointNotSet();
-            return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, base.Scheme.Name));
-        }
-
-        if (string.IsNullOrEmpty(message.AccessToken))
-        {
-            base.Logger.AccessTokenNotAvailable();
-            return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, base.Scheme.Name));
-        }
-
-        base.Logger.RetrievingClaims();
-        HttpRequestMessage httpRequestMessage = new HttpRequestMessage(HttpMethod.Get, text);
-        httpRequestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", message.AccessToken);
-        httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
-        HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);
-        responseMessage.EnsureSuccessStatusCode();
-        string userInfoResponse = await responseMessage.Content.ReadAsStringAsync(base.Context.RequestAborted);
-        MediaTypeHeaderValue contentType = responseMessage.Content.Headers.ContentType;
-        JsonDocument jsonDocument;
-        if ((contentType?.MediaType?.Equals("application/json", StringComparison.OrdinalIgnoreCase)).GetValueOrDefault())
-        {
-            jsonDocument = JsonDocument.Parse(userInfoResponse);
-        }
-        else
-        {
-            if (!(contentType?.MediaType?.Equals("application/jwt", StringComparison.OrdinalIgnoreCase)).GetValueOrDefault())
-            {
-                return HandleRequestResult.Fail("Unknown response type: " + contentType?.MediaType, properties);
-            }
-
-            jsonDocument = JsonDocument.Parse(new JwtSecurityToken(userInfoResponse).Payload.SerializeToJson());
-        }
-
-        using (jsonDocument)
-        {
-            UserInformationReceivedContext userInformationReceivedContext = await RunUserInformationReceivedEventAsync(principal, properties, message, jsonDocument);
-            if (userInformationReceivedContext.Result != null)
-            {
-                return userInformationReceivedContext.Result;
-            }
-
-            principal = userInformationReceivedContext.Principal;
-            properties = userInformationReceivedContext.Properties;
-            using JsonDocument jsonDocument2 = userInformationReceivedContext.User;
-            base.Options.ProtocolValidator.ValidateUserInfoResponse(new OpenIdConnectProtocolValidationContext
-            {
-                UserInfoEndpointResponse = userInfoResponse,
-                ValidatedIdToken = jwt
-            });
-            ClaimsIdentity identity = (ClaimsIdentity)principal.Identity;
-            foreach (ClaimAction claimAction in base.Options.ClaimActions)
-            {
-                claimAction.Run(jsonDocument2.RootElement, identity, ClaimsIssuer);
-            }
-        }
-
-        return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, base.Scheme.Name));
-    }
-
-    private void SaveTokens(AuthenticationProperties properties, OpenIdConnectMessage message)
-    {
-        List<AuthenticationToken> list = new List<AuthenticationToken>();
-        if (!string.IsNullOrEmpty(message.AccessToken))
-        {
-            list.Add(new AuthenticationToken
-            {
-                Name = "access_token",
-                Value = message.AccessToken
-            });
-        }
-
-        if (!string.IsNullOrEmpty(message.IdToken))
-        {
-            list.Add(new AuthenticationToken
-            {
-                Name = "id_token",
-                Value = message.IdToken
-            });
-        }
-
-        if (!string.IsNullOrEmpty(message.RefreshToken))
-        {
-            list.Add(new AuthenticationToken
-            {
-                Name = "refresh_token",
-                Value = message.RefreshToken
-            });
-        }
-
-        if (!string.IsNullOrEmpty(message.TokenType))
-        {
-            list.Add(new AuthenticationToken
-            {
-                Name = "token_type",
-                Value = message.TokenType
-            });
-        }
-
-        if (!string.IsNullOrEmpty(message.ExpiresIn) && int.TryParse(message.ExpiresIn, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result))
-        {
-            DateTimeOffset dateTimeOffset = base.Clock.UtcNow + TimeSpan.FromSeconds(result);
-            list.Add(new AuthenticationToken
-            {
-                Name = "expires_at",
-                Value = dateTimeOffset.ToString("o", CultureInfo.InvariantCulture)
-            });
-        }
-
-        properties.StoreTokens(list);
-    }
-
-    private void WriteNonceCookie(string nonce)
-    {
-        if (string.IsNullOrEmpty(nonce))
-        {
-            throw new ArgumentNullException("nonce");
-        }
-
-        CookieOptions options = base.Options.NonceCookie.Build(base.Context, base.Clock.UtcNow);
-        base.Response.Cookies.Append(base.Options.NonceCookie.Name + base.Options.StringDataFormat.Protect(nonce), "N", options);
-    }
-
-    private string ReadNonceCookie(string nonce)
-    {
-        if (nonce == null)
-        {
-            return null;
-        }
-
-        foreach (string key in base.Request.Cookies.Keys)
-        {
-            string name = base.Options.NonceCookie.Name;
-            if (name == null || !key.StartsWith(name, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            try
-            {
-                if (base.Options.StringDataFormat.Unprotect(key.Substring(base.Options.NonceCookie.Name.Length, key.Length - base.Options.NonceCookie.Name.Length)) == nonce)
-                {
-                    CookieOptions options = base.Options.NonceCookie.Build(base.Context, base.Clock.UtcNow);
-                    base.Response.Cookies.Delete(key, options);
-                    return nonce;
-                }
-            }
-            catch (Exception ex)
-            {
-                base.Logger.UnableToProtectNonceCookie(ex);
-            }
-        }
-
-        return null;
-    }
-
-    private async Task<MessageReceivedContext> RunMessageReceivedEventAsync(OpenIdConnectMessage message, AuthenticationProperties properties)
-    {
-        base.Logger.MessageReceived(message.BuildRedirectUrl());
-        MessageReceivedContext context = new MessageReceivedContext(base.Context, base.Scheme, base.Options, properties)
-        {
-            ProtocolMessage = message
-        };
-        await Events.MessageReceived(context);
-        if (context.Result != null)
-        {
-            if (context.Result.Handled)
-            {
-                base.Logger.MessageReceivedContextHandledResponse();
-            }
-            else if (context.Result.Skipped)
-            {
-                base.Logger.MessageReceivedContextSkipped();
-            }
-        }
-
-        return context;
-    }
-
-    private async Task<TokenValidatedContext> RunTokenValidatedEventAsync(OpenIdConnectMessage authorizationResponse, OpenIdConnectMessage tokenEndpointResponse, ClaimsPrincipal user, AuthenticationProperties properties, JwtSecurityToken jwt, string nonce)
-    {
-        TokenValidatedContext context = new TokenValidatedContext(base.Context, base.Scheme, base.Options, user, properties)
-        {
-            ProtocolMessage = authorizationResponse,
-            TokenEndpointResponse = tokenEndpointResponse,
-            SecurityToken = jwt,
-            Nonce = nonce
-        };
-        await Events.TokenValidated(context);
-        if (context.Result != null)
-        {
-            if (context.Result.Handled)
-            {
-                base.Logger.TokenValidatedHandledResponse();
-            }
-            else if (context.Result.Skipped)
-            {
-                base.Logger.TokenValidatedSkipped();
-            }
-        }
-
-        return context;
-    }
-
-    private async Task<AuthorizationCodeReceivedContext> RunAuthorizationCodeReceivedEventAsync(OpenIdConnectMessage authorizationResponse, ClaimsPrincipal user, AuthenticationProperties properties, JwtSecurityToken jwt)
-    {
-        base.Logger.AuthorizationCodeReceived();
-        OpenIdConnectMessage openIdConnectMessage = new OpenIdConnectMessage
-        {
-            ClientId = base.Options.ClientId,
-            ClientSecret = base.Options.ClientSecret,
-            Code = authorizationResponse.Code,
-            GrantType = "authorization_code",
-            EnableTelemetryParameters = !base.Options.DisableTelemetry,
-            RedirectUri = properties.Items[OpenIdConnectDefaults.RedirectUriForCodePropertiesKey]
-        };
-        if (properties.Items.TryGetValue(OAuthConstants.CodeVerifierKey, out string value))
-        {
-            openIdConnectMessage.Parameters.Add(OAuthConstants.CodeVerifierKey, value);
-            properties.Items.Remove(OAuthConstants.CodeVerifierKey);
-        }
-
-        AuthorizationCodeReceivedContext context = new AuthorizationCodeReceivedContext(base.Context, base.Scheme, base.Options, properties)
-        {
-            ProtocolMessage = authorizationResponse,
-            TokenEndpointRequest = openIdConnectMessage,
-            Principal = user,
-            JwtSecurityToken = jwt,
-            Backchannel = Backchannel
-        };
-        await Events.AuthorizationCodeReceived(context);
-        if (context.Result != null)
-        {
-            if (context.Result.Handled)
-            {
-                base.Logger.AuthorizationCodeReceivedContextHandledResponse();
-            }
-            else if (context.Result.Skipped)
-            {
-                base.Logger.AuthorizationCodeReceivedContextSkipped();
-            }
-        }
-
-        return context;
-    }
-
-    private async Task<TokenResponseReceivedContext> RunTokenResponseReceivedEventAsync(OpenIdConnectMessage message, OpenIdConnectMessage tokenEndpointResponse, ClaimsPrincipal user, AuthenticationProperties properties)
-    {
-        base.Logger.TokenResponseReceived();
-        TokenResponseReceivedContext context = new TokenResponseReceivedContext(base.Context, base.Scheme, base.Options, user, properties)
-        {
-            ProtocolMessage = message,
-            TokenEndpointResponse = tokenEndpointResponse
-        };
-        await Events.TokenResponseReceived(context);
-        if (context.Result != null)
-        {
-            if (context.Result.Handled)
-            {
-                base.Logger.TokenResponseReceivedHandledResponse();
-            }
-            else if (context.Result.Skipped)
-            {
-                base.Logger.TokenResponseReceivedSkipped();
-            }
-        }
-
-        return context;
-    }
-
-    private async Task<UserInformationReceivedContext> RunUserInformationReceivedEventAsync(ClaimsPrincipal principal, AuthenticationProperties properties, OpenIdConnectMessage message, JsonDocument user)
-    {
-        base.Logger.UserInformationReceived(user.ToString());
-        UserInformationReceivedContext context = new UserInformationReceivedContext(base.Context, base.Scheme, base.Options, principal, properties)
-        {
-            ProtocolMessage = message,
-            User = user
-        };
-        await Events.UserInformationReceived(context);
-        if (context.Result != null)
-        {
-            if (context.Result.Handled)
-            {
-                base.Logger.UserInformationReceivedHandledResponse();
-            }
-            else if (context.Result.Skipped)
-            {
-                base.Logger.UserInformationReceivedSkipped();
-            }
-        }
-
-        return context;
-    }
-
-    private async Task<AuthenticationFailedContext> RunAuthenticationFailedEventAsync(OpenIdConnectMessage message, Exception exception)
-    {
-        AuthenticationFailedContext context = new AuthenticationFailedContext(base.Context, base.Scheme, base.Options)
-        {
-            ProtocolMessage = message,
-            Exception = exception
-        };
-        await Events.AuthenticationFailed(context);
-        if (context.Result != null)
-        {
-            if (context.Result.Handled)
-            {
-                base.Logger.AuthenticationFailedContextHandledResponse();
-            }
-            else if (context.Result.Skipped)
-            {
-                base.Logger.AuthenticationFailedContextSkipped();
-            }
-        }
-
-        return context;
-    }
-
-    private ClaimsPrincipal ValidateToken(string idToken, AuthenticationProperties properties, TokenValidationParameters validationParameters, out JwtSecurityToken jwt)
-    {
-        if (!base.Options.SecurityTokenValidator.CanReadToken(idToken))
-        {
-            base.Logger.UnableToReadIdToken(idToken);
-            throw new SecurityTokenException(string.Format(CultureInfo.InvariantCulture, Resources.UnableToValidateToken, idToken));
-        }
-
-        if (_configuration != null)
-        {
-            string[] array = new string[1] { _configuration.Issuer };
-            validationParameters.ValidIssuers = validationParameters.ValidIssuers?.Concat(array) ?? array;
-            validationParameters.IssuerSigningKeys = validationParameters.IssuerSigningKeys?.Concat(_configuration.SigningKeys) ?? _configuration.SigningKeys;
-        }
-
-        SecurityToken validatedToken;
-        ClaimsPrincipal result = base.Options.SecurityTokenValidator.ValidateToken(idToken, validationParameters, out validatedToken);
-        if (validatedToken is JwtSecurityToken jwtSecurityToken)
-        {
-            jwt = jwtSecurityToken;
-            if (validatedToken == null)
-            {
-                base.Logger.UnableToValidateIdToken(idToken);
-                throw new SecurityTokenException(string.Format(CultureInfo.InvariantCulture, Resources.UnableToValidateToken, idToken));
-            }
-
-            if (base.Options.UseTokenLifetime)
-            {
-                DateTime validFrom = validatedToken.ValidFrom;
-                if (validFrom != DateTime.MinValue)
-                {
-                    properties.IssuedUtc = validFrom;
-                }
-
-                DateTime validTo = validatedToken.ValidTo;
-                if (validTo != DateTime.MinValue)
-                {
-                    properties.ExpiresUtc = validTo;
-                }
-            }
-
-            return result;
-        }
-
-        base.Logger.InvalidSecurityTokenType(validatedToken?.GetType().ToString());
-        throw new SecurityTokenException(string.Format(CultureInfo.InvariantCulture, Resources.ValidatedSecurityTokenNotJwt, validatedToken?.GetType()));
-    }
-
-    private string BuildRedirectUriIfRelative(string uri);
-}
-//-------------------------------Ʌ
-
-//---------------------------------------------------------V
-public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHandler<TOptions>, IAuthenticationRequestHandler where TOptions : RemoteAuthenticationOptions, new()
-{
-    private const string CorrelationProperty = ".xsrf";
-    private const string CorrelationMarker = "N";
-    private const string AuthSchemeKey = ".AuthScheme";
-
-    protected string? SignInScheme => Options.SignInScheme;
-
-    protected new RemoteAuthenticationEvents Events { get; set; }  // on base.Events
-
-    protected RemoteAuthenticationHandler(IOptionsMonitor<TOptions> options, ILoggerFactory logger, UrlEncoder encoder, ISystemClock clock) : base(options, logger, encoder, clock) { }
-
-    protected override Task<object> CreateEventsAsync() => Task.FromResult<object>(new RemoteAuthenticationEvents());
-
-    public virtual Task<bool> ShouldHandleRequestAsync()  => Task.FromResult(Options.CallbackPath == Request.Path);
-
-    public virtual async Task<bool> HandleRequestAsync()
-    {
-        if (!await ShouldHandleRequestAsync())
-        {
-            return false;
-        }
-
-        AuthenticationTicket? ticket = null;
-        Exception? exception = null;
-        AuthenticationProperties? properties = null;
-        try
-        {
-            var authResult = await HandleRemoteAuthenticateAsync();
-            if (authResult == null)
-            {
-                exception = new InvalidOperationException("Invalid return state, unable to redirect.");
-            }
-            else if (authResult.Handled)
-            {
-                return true;
-            }
-            else if (authResult.Skipped || authResult.None)
-            {
-                return false;
-            }
-            else if (!authResult.Succeeded)
-            {
-                exception = authResult.Failure ?? new InvalidOperationException("Invalid return state, unable to redirect.");
-                properties = authResult.Properties;
-            }
-
-            ticket = authResult?.Ticket;
-        }
-        catch (Exception ex)
-        {
-            exception = ex;
-        }
-
-        if (exception != null)
-        {
-           // ...
-        }
-
-        // We have a ticket if we get here
-        Debug.Assert(ticket != null);
-        var ticketContext = new TicketReceivedContext(Context, Scheme, Options, ticket)
-        {
-            ReturnUri = ticket.Properties.RedirectUri
-        };
-
-        ticket.Properties.RedirectUri = null;
-
-        // Mark which provider produced this identity so we can cross-check later in HandleAuthenticateAsync
-        ticketContext.Properties!.Items[AuthSchemeKey] = Scheme.Name;
-
-        await Events.TicketReceived(ticketContext);
-
-        if (ticketContext.Result != null)
-        {
-            if (ticketContext.Result.Handled)
-            {
-                Logger.SignInHandled();
-                return true;
-            }
-            else if (ticketContext.Result.Skipped)
-            {
-                Logger.SignInSkipped();
-                return false;
-            }
-        }
-
-        await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);
-
-        // Default redirect path is the base path
-        if (string.IsNullOrEmpty(ticketContext.ReturnUri))
-        {
-            ticketContext.ReturnUri = "/";
-        }
-
-        Response.Redirect(ticketContext.ReturnUri);
-        return true;
-    }
-
-    protected abstract Task<HandleRequestResult> HandleRemoteAuthenticateAsync();
-
-    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
-    {
-        var result = await Context.AuthenticateAsync(SignInScheme);
-        if (result != null)
-        {
-            if (result.Failure != null)
-            {
-                return result;
-            }
-
-            // The SignInScheme may be shared with multiple providers, make sure this provider issued the identity.
-            var ticket = result.Ticket;
-            if (ticket != null && ticket.Principal != null && ticket.Properties != null
-                && ticket.Properties.Items.TryGetValue(AuthSchemeKey, out var authenticatedScheme)
-                && string.Equals(Scheme.Name, authenticatedScheme, StringComparison.Ordinal))
-            {
-                return AuthenticateResult.Success(new AuthenticationTicket(ticket.Principal,
-                    ticket.Properties, Scheme.Name));
-            }
-
-            return AuthenticateResult.Fail("Not authenticated");
-        }
-
-        return AuthenticateResult.Fail("Remote authentication does not directly support AuthenticateAsync");
-    }
-
-    protected override Task HandleForbiddenAsync(AuthenticationProperties properties) => Context.ForbidAsync(SignInScheme);
-
-    protected virtual void GenerateCorrelationId(AuthenticationProperties properties)
-    {
-        if (properties == null)
-        {
-            throw new ArgumentNullException(nameof(properties));
-        }
-
-        var bytes = new byte[32];
-        RandomNumberGenerator.Fill(bytes);
-        var correlationId = Base64UrlTextEncoder.Encode(bytes);
-
-        var cookieOptions = Options.CorrelationCookie.Build(Context, Clock.UtcNow);
-
-        properties.Items[CorrelationProperty] = correlationId;
-
-        var cookieName = Options.CorrelationCookie.Name + correlationId;
-
-        Response.Cookies.Append(cookieName, CorrelationMarker, cookieOptions);
-    }
-
-    protected virtual bool ValidateCorrelationId(AuthenticationProperties properties)
-    {
-        if (properties == null)
-        {
-            throw new ArgumentNullException(nameof(properties));
-        }
-
-        if (!properties.Items.TryGetValue(CorrelationProperty, out var correlationId))
-        {
-            Logger.CorrelationPropertyNotFound(Options.CorrelationCookie.Name!);
-            return false;
-        }
-
-        properties.Items.Remove(CorrelationProperty);
-
-        var cookieName = Options.CorrelationCookie.Name + correlationId;
-
-        var correlationCookie = Request.Cookies[cookieName];
-        if (string.IsNullOrEmpty(correlationCookie))
-        {
-            Logger.CorrelationCookieNotFound(cookieName);
-            return false;
-        }
-
-        var cookieOptions = Options.CorrelationCookie.Build(Context, Clock.UtcNow);
-
-        Response.Cookies.Delete(cookieName, cookieOptions);
-
-        if (!string.Equals(correlationCookie, CorrelationMarker, StringComparison.Ordinal))
-        {
-            Logger.UnexpectedCorrelationCookieValue(cookieName, correlationCookie);
-            return false;
-        }
-
-        return true;
-    }
-
-    protected virtual async Task<HandleRequestResult> HandleAccessDeniedErrorAsync(AuthenticationProperties properties)
-    {
-        Logger.AccessDeniedError();
-        var context = new AccessDeniedContext(Context, Scheme, Options)
-        {
-            AccessDeniedPath = Options.AccessDeniedPath,
-            Properties = properties,
-            ReturnUrl = properties?.RedirectUri,
-            ReturnUrlParameter = Options.ReturnUrlParameter
-        };
-        await Events.AccessDenied(context);
-
-        if (context.Result != null)
-        {
-            if (context.Result.Handled)
-            {
-                Logger.AccessDeniedContextHandled();
-            }
-            else if (context.Result.Skipped)
-            {
-                Logger.AccessDeniedContextSkipped();
-            }
-
-            return context.Result;
-        }
-
-        // If an access denied endpoint was specified, redirect the user agent. Otherwise, invoke the RemoteFailure event for further processing.
-        if (context.AccessDeniedPath.HasValue)
-        {
-            string uri = context.AccessDeniedPath;
-            if (!string.IsNullOrEmpty(context.ReturnUrlParameter) && !string.IsNullOrEmpty(context.ReturnUrl))
-            {
-                uri = QueryHelpers.AddQueryString(uri, context.ReturnUrlParameter, context.ReturnUrl);
-            }
-            Response.Redirect(BuildRedirectUri(uri));
-
-            return HandleRequestResult.Handle();
-        }
-
-        return HandleRequestResult.NoResult();
     }
 }
-//---------------------------------------------------------Ʌ
+//-------------------------Ʌ Client
 ```
-
-
