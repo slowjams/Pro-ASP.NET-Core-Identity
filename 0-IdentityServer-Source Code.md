@@ -733,7 +733,7 @@ internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
               RedirectUri = "https://localhost:7184/signin-oidc"
               Request = {Duende.IdentityServer.Validation.ValidatedAuthorizeRequest}
               Scope = "openid profile"
-              SessionState = "0A1p6zn4hcizfpMeipQE3EgmOavZyi6IKFOR1D_UY.90CD968BDBEBFFD7839BD0AEA5E74CE"
+              SessionState = "0A1p6zn4hcizfpMeipQEEgmOavZyi6IKFOR1D_UY.90CD968BDBEBFFD7839BD0AEA5E74CE"
               State = "CfDJ8Fr2n1UxboNJlI8uHVA4skobbheKboVu0uc-Sw82YrXv0FSfGKT7h0rLyCJv18oA_-76qioJpUgqSBOy64XArrHcs_bRqkg1q7ZSkFLeT..."
            }
         */
@@ -938,6 +938,73 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
     }
 }
 //-------------------------------------Ʌ
+
+//-----------------------------V
+internal class UserInfoEndpoint : IEndpointHandler
+{
+    private readonly BearerTokenUsageValidator _tokenUsageValidator;
+    private readonly IUserInfoRequestValidator _requestValidator;
+    private readonly IUserInfoResponseGenerator _responseGenerator;
+    private readonly ILogger _logger;
+
+    public UserInfoEndpoint(
+        BearerTokenUsageValidator tokenUsageValidator, 
+        IUserInfoRequestValidator requestValidator, 
+        IUserInfoResponseGenerator responseGenerator, 
+        ILogger<UserInfoEndpoint> logger)
+    {
+       // ....
+    }
+
+    public async Task<IEndpointResult> ProcessAsync(HttpContext context)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.UserInfo + "Endpoint");
+        
+        if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsPost(context.Request.Method))
+        {
+            _logger.LogWarning("Invalid HTTP method for userinfo endpoint.");
+            return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
+        }
+
+        return await ProcessUserInfoRequestAsync(context);
+    }
+
+    private async Task<IEndpointResult> ProcessUserInfoRequestAsync(HttpContext context)
+    {
+        _logger.LogDebug("Start userinfo request");
+
+        // userinfo requires an access token on the request
+        var tokenUsageResult = await _tokenUsageValidator.ValidateAsync(context);
+        if (tokenUsageResult.TokenFound == false)
+        {
+            var error = "No access token found.";
+
+            _logger.LogError(error);
+            return Error(OidcConstants.ProtectedResourceErrors.InvalidToken);
+        }
+
+        // validate the request
+        _logger.LogTrace("Calling into userinfo request validator: {type}", _requestValidator.GetType().FullName);
+        var validationResult = await _requestValidator.ValidateRequestAsync(tokenUsageResult.Token);
+
+        if (validationResult.IsError)
+        {
+            //_logger.LogError("Error validating  validationResult.Error);
+            return Error(validationResult.Error);
+        }
+
+        // generate response
+        _logger.LogTrace("Calling into userinfo response generator: {type}", _responseGenerator.GetType().FullName);
+        var response = await _responseGenerator.ProcessAsync(validationResult);  // <---------------------------------------
+
+        _logger.LogDebug("End userinfo request");
+
+        return new UserInfoResult(response);
+    }
+
+    private IEndpointResult Error(string error, string description = null) => new ProtectedResourceErrorResult(error, description);
+}
+//-----------------------------Ʌ
 
 //-------------------------------V // handle https://localhost:5001/connect/endsession
 internal class EndSessionEndpoint : IEndpointHandler
@@ -2689,6 +2756,110 @@ public class TokenResponseGenerator : ITokenResponseGenerator
 }
 //---------------------------------Ʌ
 
+//------------------------------------V
+public class UserInfoResponseGenerator : IUserInfoResponseGenerator
+{
+    protected readonly ILogger Logger;
+    protected readonly IProfileService Profile;
+    protected readonly IResourceStore Resources;
+
+    public UserInfoResponseGenerator(IProfileService profile, IResourceStore resourceStore, ILogger<UserInfoResponseGenerator> logger)
+    {
+        Profile = profile;
+        Resources = resourceStore;
+        Logger = logger;
+    }
+
+    public virtual async Task<Dictionary<string, object>> ProcessAsync(UserInfoRequestValidationResult validationResult)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity("UserInfoResponseGenerator.Process");
+        
+        Logger.LogDebug("Creating userinfo response");
+
+        // extract scopes and turn into requested claim types
+        var scopes = validationResult.TokenValidationResult.Claims.Where(c => c.Type == JwtClaimTypes.Scope).Select(c => c.Value);
+
+        var validatedResources = await GetRequestedResourcesAsync(scopes);
+        var requestedClaimTypes = await GetRequestedClaimTypesAsync(validatedResources);
+
+        Logger.LogDebug("Requested claim types: {claimTypes}", requestedClaimTypes.ToSpaceSeparatedString());
+
+        // call profile service
+        var context = new ProfileDataRequestContext(
+            validationResult.Subject,
+            validationResult.TokenValidationResult.Client,
+            IdentityServerConstants.ProfileDataCallers.UserInfoEndpoint,
+            requestedClaimTypes);
+        context.RequestedResources = validatedResources;
+
+        await Profile.GetProfileDataAsync(context);  // <---------------------------------
+        var profileClaims = context.IssuedClaims;
+
+        // construct outgoing claims
+        var outgoingClaims = new List<Claim>();
+
+        if (profileClaims == null)
+        {
+            Logger.LogInformation("Profile service returned no claims (null)");
+        }
+        else
+        {
+            outgoingClaims.AddRange(profileClaims);
+            Logger.LogInformation("Profile service returned the following claim types: {types}", profileClaims.Select(c => c.Type).ToSpaceSeparatedString());
+        }
+
+        var subClaim = outgoingClaims.SingleOrDefault(x => x.Type == JwtClaimTypes.Subject);
+        if (subClaim == null)
+        {
+            outgoingClaims.Add(new Claim(JwtClaimTypes.Subject, validationResult.Subject.GetSubjectId()));
+        }
+        else if (subClaim.Value != validationResult.Subject.GetSubjectId())
+        {
+            Logger.LogError("Profile service returned incorrect subject value: {sub}", subClaim);
+            throw new InvalidOperationException("Profile service returned incorrect subject value");
+        }
+
+        return outgoingClaims.ToClaimsDictionary();
+    }
+
+    protected internal virtual async Task<ResourceValidationResult> GetRequestedResourcesAsync(IEnumerable<string> scopes)
+    {
+        if (scopes == null || !scopes.Any())
+        {
+            return null;
+        }
+
+        var scopeString = string.Join(" ", scopes);
+        Logger.LogDebug("Scopes in access token: {scopes}", scopeString);
+
+        // if we ever parameterized identity scopes, then we would need to invoke the resource validator's parse API here
+        var identityResources = await Resources.FindEnabledIdentityResourcesByScopeAsync(scopes);
+            
+        var resources = new Resources(identityResources, Enumerable.Empty<ApiResource>(), Enumerable.Empty<ApiScope>());
+        var result = new ResourceValidationResult(resources);
+            
+        return result;
+    }
+
+    protected internal virtual Task<IEnumerable<string>> GetRequestedClaimTypesAsync(ResourceValidationResult resourceValidationResult)
+    {
+        IEnumerable<string> result = null;
+
+        if (resourceValidationResult == null)
+        {
+            result = Enumerable.Empty<string>();
+        }
+        else
+        {
+            var identityResources = resourceValidationResult.Resources.IdentityResources;
+            result = identityResources.SelectMany(x => x.UserClaims).Distinct();
+        }
+
+        return Task.FromResult(result);
+    }
+}
+//------------------------------------Ʌ
+
 //------------------------------->>
 public interface IEndpointHandler
 {
@@ -2969,6 +3140,222 @@ internal class TokenEndpoint : IEndpointHandler
 ```
 
 ```C#
+//----------------------------------->>
+public interface IPersistedGrantStore
+{
+    Task StoreAsync(PersistedGrant grant);
+    Task<PersistedGrant?> GetAsync(string key);
+    Task<IEnumerable<PersistedGrant>> GetAllAsync(PersistedGrantFilter filter);
+    Task RemoveAsync(string key);
+    Task RemoveAllAsync(PersistedGrantFilter filter);
+}
+//-----------------------------------<<
+
+//------------------------------V
+public class PersistedGrantStore : Duende.IdentityServer.Stores.IPersistedGrantStore  // from Duende.IdentityServer.EntityFramework.Stores
+{
+    protected readonly IPersistedGrantDbContext Context;
+
+    public PersistedGrantStore(IPersistedGrantDbContext context, ILogger<PersistedGrantStore> logger, ICancellationTokenProvider cancellationTokenProvider)
+    {
+        Context = context;
+        // ...
+    }
+
+    // ...
+}
+//------------------------------Ʌ
+
+//-------------------------------V
+public class DefaultGrantStore<T>
+{
+    protected string GrantType { get; }
+    protected ILogger Logger { get; }
+    protected IPersistedGrantStore Store { get; }
+    protected IPersistentGrantSerializer Serializer { get; }
+    protected IHandleGenerationService HandleGenerationService { get; }
+
+    protected DefaultGrantStore(string grantType,
+        IPersistedGrantStore store,
+        IPersistentGrantSerializer serializer,
+        IHandleGenerationService handleGenerationService,
+        ILogger logger)
+    {
+        // ...
+    }
+
+    private const string KeySeparator = ":";
+
+    protected const string HexEncodingFormatSuffix = "-1";
+
+    protected async Task<string> CreateHandleAsync()
+    {
+        return await HandleGenerationService.GenerateAsync() + HexEncodingFormatSuffix;
+    }
+
+    protected virtual string GetHashedKey(string value)
+    {
+        var key = (value + KeySeparator + GrantType);
+
+        if (value.EndsWith(HexEncodingFormatSuffix))
+        {
+            // newer format >= v6; uses hex encoding to avoid collation issues
+            using (var sha = SHA256.Create())
+            {
+                var bytes = Encoding.UTF8.GetBytes(key);
+                var hash = sha.ComputeHash(bytes);
+                return BitConverter.ToString(hash).Replace("-", "");
+            }
+        }
+
+        // old format <= v5
+        return key.Sha256();
+    }
+
+    protected virtual async Task<T> GetItemAsync(string key)
+    {
+        var hashedKey = GetHashedKey(key);
+        var item = await GetItemByHashedKeyAsync(hashedKey);
+        if (item == null)
+        {
+            Logger.LogDebug("{grantType} grant with value: {key} not found in store.", GrantType, key);
+        }
+        return item;
+    }
+
+    protected virtual async Task<T> GetItemByHashedKeyAsync(string hashedKey)
+    {
+        var grant = await Store.GetAsync(hashedKey);
+        if (grant != null && grant.Type == GrantType)
+        {
+            try
+            {
+                return Serializer.Deserialize<T>(grant.Data);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Failed to deserialize JSON from grant store.");
+            }
+        }
+
+        return default;
+    }
+
+    protected virtual async Task<IEnumerable<T>> GetAllAsync(PersistedGrantFilter filter)
+    {
+        filter.Type = GrantType;
+        var items = await Store.GetAllAsync(filter);
+        var result = items.Select(x => Serializer.Deserialize<T>(x.Data)).ToArray();
+        return result;
+    }
+
+    protected virtual async Task<string> CreateItemAsync(T item, string clientId, string subjectId, string sessionId, string description, DateTime created, int lifetime)
+    {
+        var handle = await CreateHandleAsync();
+        await StoreItemAsync(handle, item, clientId, subjectId, sessionId, description, created, created.AddSeconds(lifetime));
+        return handle;
+    }
+
+    protected virtual Task StoreItemAsync(string key, T item, string clientId, string subjectId, string sessionId, string description, DateTime created, DateTime? expiration, DateTime? consumedTime = null)
+    {
+        key = GetHashedKey(key);
+        return StoreItemByHashedKeyAsync(key, item, clientId, subjectId, sessionId, description, created, expiration, consumedTime);
+    }
+
+    protected virtual async Task StoreItemByHashedKeyAsync(string hashedKey, T item, string clientId, string subjectId, string sessionId, string description, DateTime created, DateTime? expiration, DateTime? consumedTime = null)
+    {
+        var json = Serializer.Serialize(item);
+
+        var grant = new PersistedGrant
+        {
+            Key = hashedKey,
+            Type = GrantType,
+            ClientId = clientId,
+            SubjectId = subjectId,
+            SessionId = sessionId,
+            Description = description,
+            CreationTime = created,
+            Expiration = expiration,
+            ConsumedTime = consumedTime,
+            Data = json
+        };
+
+        await Store.StoreAsync(grant);
+    }
+
+    protected virtual Task RemoveItemAsync(string key)
+    {
+        key = GetHashedKey(key);
+        return RemoveItemByHashedKeyAsync(key);
+    }
+
+    protected virtual async Task RemoveItemByHashedKeyAsync(string key)
+    {
+        await Store.RemoveAsync(key);
+    }
+
+    protected virtual async Task RemoveAllAsync(string subjectId, string clientId, string sessionId = null)
+    {
+        await Store.RemoveAllAsync(new PersistedGrantFilter
+        {
+            SubjectId = subjectId,
+            ClientId = clientId,
+            SessionId = sessionId,
+            Type = GrantType
+        });
+    }
+}
+//-------------------------------Ʌ
+
+//-----------------------------------V
+public class DefaultRefreshTokenStore : DefaultGrantStore<RefreshToken>, IRefreshTokenStore
+{
+    public DefaultRefreshTokenStore(
+        IPersistedGrantStore store, 
+        IPersistentGrantSerializer serializer, 
+        IHandleGenerationService handleGenerationService,
+        ILogger<DefaultRefreshTokenStore> logger) 
+        : base(IdentityServerConstants.PersistedGrantTypes.RefreshToken, store, serializer, handleGenerationService, logger) { }
+
+    public async Task<string> StoreRefreshTokenAsync(RefreshToken refreshToken)
+    {
+        using var activity = Tracing.StoreActivitySource.StartActivity("DefaultRefreshTokenStore.StoreRefreshTokenAsync");
+        
+        return await CreateItemAsync(refreshToken, refreshToken.ClientId, refreshToken.SubjectId, refreshToken.SessionId, refreshToken.Description, refreshToken.CreationTime, refreshToken.Lifetime);
+    }
+
+    public Task UpdateRefreshTokenAsync(string handle, RefreshToken refreshToken)
+    {
+        using var activity = Tracing.StoreActivitySource.StartActivity("DefaultRefreshTokenStore.UpdateRefreshToken");
+        
+        return StoreItemAsync(handle, refreshToken, refreshToken.ClientId, refreshToken.SubjectId, refreshToken.SessionId, refreshToken.Description, refreshToken.CreationTime, refreshToken.CreationTime.AddSeconds(refreshToken.Lifetime), refreshToken.ConsumedTime);
+    }
+
+    public Task<RefreshToken> GetRefreshTokenAsync(string refreshTokenHandle)
+    {
+        using var activity = Tracing.StoreActivitySource.StartActivity("DefaultRefreshTokenStore.GetRefreshToken");
+        
+        return GetItemAsync(refreshTokenHandle);
+    }
+
+    public Task RemoveRefreshTokenAsync(string refreshTokenHandle)
+    {
+        using var activity = Tracing.StoreActivitySource.StartActivity("DefaultRefreshTokenStore.RemoveRefreshToken");
+        
+        return RemoveItemAsync(refreshTokenHandle);
+    }
+
+    public Task RemoveRefreshTokensAsync(string subjectId, string clientId)
+    {
+        using var activity = Tracing.StoreActivitySource.StartActivity("DefaultRefreshTokenStore.RemoveRefreshTokens");
+        
+        return RemoveAllAsync(subjectId, clientId);
+    }
+}
+//-----------------------------------Ʌ
+```
+
+```C#
 //------------------------------>>
 public interface IProfileService
 {
@@ -2976,6 +3363,55 @@ public interface IProfileService
     Task IsActiveAsync(IsActiveContext context);
 }
 //------------------------------<<
+
+//------------------------------------V
+public class ProfileDataRequestContext
+{
+    public ProfileDataRequestContext() { }
+
+    public ProfileDataRequestContext(ClaimsPrincipal subject, Client client, string caller, IEnumerable<string> requestedClaimTypes)
+    {
+        // ...
+    }
+
+    public ValidatedRequest ValidatedRequest { get; set; } = default!;
+    public ClaimsPrincipal Subject { get; set; } = default!;
+    public IEnumerable<string> RequestedClaimTypes { get; set; } = Enumerable.Empty<string>();
+    public Client Client { get; set; } = default!;
+    public string Caller { get; set; } = default!;
+    public ResourceValidationResult RequestedResources { get; set; } = default!;
+    public List<Claim> IssuedClaims { get; set; } = new List<Claim>();
+}
+//------------------------------------Ʌ
+
+//--------------------------------V
+public class DefaultProfileService : IProfileService
+{
+    protected readonly ILogger Logger;
+    public DefaultProfileService(ILogger<DefaultProfileService> logger) { Logger = logger; }
+
+    public virtual Task GetProfileDataAsync(ProfileDataRequestContext context)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultProfileService.GetProfileData");
+        
+        context.LogProfileRequest(Logger);
+        context.AddRequestedClaims(context.Subject.Claims);
+        context.LogIssuedClaims(Logger);
+
+        return Task.CompletedTask;
+    }
+
+    public virtual Task IsActiveAsync(IsActiveContext context)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultProfileService.IsActive");
+        
+        Logger.LogDebug("IsActive called from: {caller}", context.Caller);
+
+        context.IsActive = true;
+        return Task.CompletedTask;
+    }
+}
+//--------------------------------Ʌ
 
 //---------------------------------V
 public class TestUserProfileService : IProfileService
@@ -3559,7 +3995,7 @@ public class Index : PageModel
             LogoutId ??= await _interaction.CreateLogoutContextAsync();
                 
             // delete local authentication cookie
-            await HttpContext.SignOutAsync();  // <--------------------------------------------e2.2 end the session
+            await HttpContext.SignOutAsync();  // <--------------------------------------------!impoort e2.2 end the session
 
             // see if we need to trigger federated logout
             var idp = User.FindFirst(JwtClaimTypes.IdentityProvider)?.Value;

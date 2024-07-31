@@ -81,7 +81,7 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
     public OpenIdConnectConfiguration? Configuration { get; set; }
     public IConfigurationManager<OpenIdConnectConfiguration>? ConfigurationManager { get; set; }
 
-    public bool GetClaimsFromUserInfoEndpoint { get; set; }
+    public bool GetClaimsFromUserInfoEndpoint { get; set; }  // <------------------------------
     public ClaimActionCollection ClaimActions { get; } = new ClaimActionCollection();
 
     public bool RequireHttpsMetadata { get; set; } = true;
@@ -306,17 +306,17 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
     {
         return Task.FromResult((object)new OpenIdConnectEvents());
     }
-
-    public override Task<bool> HandleRequestAsync()   // <----------------------o1.0
+  
+    public override Task<bool> HandleRequestAsync()   // <----------------------o1.0 handles /signin-oidc request which contains auth code from idp
     {
         if (base.Options.RemoteSignOutPath.HasValue && base.Options.RemoteSignOutPath == base.Request.Path)
         {
             return HandleRemoteSignOutAsync();
         }
 
-        if (base.Options.SignedOutCallbackPath.HasValue && base.Options.SignedOutCallbackPath == base.Request.Path)
-        {
-            return HandleSignOutCallbackAsync();
+        if (base.Options.SignedOutCallbackPath.HasValue && base.Options.SignedOutCallbackPath == base.Request.Path)  // handles https://localhost:7184/signout-callback-oidc
+        {                                                                                                            // which calls by IDP via its Client config PostLogoutRedirectUris
+            return HandleSignOutCallbackAsync();  // redirect user to https://localhost:7184 which later trigger the HandleChallengeAsync again to show user Accout/Login page
         }
 
         return base.HandleRequestAsync();  // <----------------------o1.1.
@@ -529,7 +529,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         properties = signOut.Properties;
         if (!string.IsNullOrEmpty(properties?.RedirectUri))
         {
-            base.Response.Redirect(properties.RedirectUri);
+            base.Response.Redirect(properties.RedirectUri);  // <----------------RedirectUri is https://localhost:7184
         }
 
         return true;
@@ -905,7 +905,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
 
             if (Options.GetClaimsFromUserInfoEndpoint)
             {
-                return await GetUserInformationAsync(tokenEndpointResponse ?? authorizationResponse, jwt!, user!, properties!);
+                return await GetUserInformationAsync(tokenEndpointResponse ?? authorizationResponse, jwt!, user!, properties!);  // <----------------------o4.4
             }
             else
             {
@@ -919,7 +919,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 }
             }
 
-            return HandleRequestResult.Success(new AuthenticationTicket(user, properties, Scheme.Name));   // <----------------------------------------o4.4. user is authenticated now
+            return HandleRequestResult.Success(new AuthenticationTicket(user, properties, Scheme.Name));   // <----------------------------------------o4.8. user is authenticated now
         }
         catch (Exception exception)
         {
@@ -1051,9 +1051,13 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         */
     }
 
-    protected virtual async Task<HandleRequestResult> GetUserInformationAsync(OpenIdConnectMessage message, JwtSecurityToken jwt, ClaimsPrincipal principal, AuthenticationProperties properties)
+    protected virtual async Task<HandleRequestResult> GetUserInformationAsync(   // <----------------------------------------o4.4
+        OpenIdConnectMessage message, 
+        JwtSecurityToken jwt, 
+        ClaimsPrincipal principal,
+         AuthenticationProperties properties)
     {
-        string text = _configuration?.UserInfoEndpoint;
+        string text = _configuration?.UserInfoEndpoint;   // <-------------------4.5 https://localhost:5001/connect/userinfo
         if (string.IsNullOrEmpty(text))
         {
             base.Logger.UserInfoEndpointNotSet();
@@ -1071,7 +1075,9 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         httpRequestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", message.AccessToken);
         httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
 
-        HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <-------------------
+        HttpResponseMessage responseMessage =  
+            await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <-------------------4.6 call IDP on https://localhost:5001/connect/userinfo
+        
         responseMessage.EnsureSuccessStatusCode();
 
         string userInfoResponse = await responseMessage.Content.ReadAsStringAsync(base.Context.RequestAborted);
@@ -1114,8 +1120,10 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             }
         }
 
-        return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, base.Scheme.Name));
-    }
+        return HandleRequestResult.Success(
+            new AuthenticationTicket(principal, properties, base.Scheme.Name)  // <-----------------4.7 now you see why user-client cookie contains name = Emma claim, while id token 
+        );                                                                     // still doesn't have name = Emma, because we call UserInfoEndpoint to get more claims  and it is not
+    }                                                                          // a good practice to contains user info, the url will be lengthy, some old browser might not support it
 
     private void SaveTokens(AuthenticationProperties properties, OpenIdConnectMessage message)  
     {

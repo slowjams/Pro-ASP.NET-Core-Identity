@@ -215,7 +215,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-6. Inside `IdentityServerMiddleware` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -264,12 +264,12 @@ and let's say you didn't clear IDP cookie, and after user click logout and reque
 
 A special note on the "user-to-idp cookie" and "user-to-client" cookie. the former is created first on the IdentityServer's end i.e Login page, so the claims will be the data on the signin form (especially the "user = Emma" claim which probably won't be in id token). "user-to-client" cookie however it is created based on id token from idp.
 
-So if you don't clear IDP own session/cookie, and request the resource, resource will be returned to your with no 401 error (bug), behind the scene`AuthorizationMiddleware` calls `OpenIdConnectHandler.HandleChallengeAsync()` to repeat the communication to idp, after  `https://localhost:7184/signin-oidc` is handled by client, Client calls `Context.SignInAsync()` again. If you request the reousrce again,  resource will be returned to you (still a bug), and this time `OpenIdConnectHandler.HandleChallengeAsync()` won't be called
+So if you don't clear IDP own session/cookie, and request the resource, resource will be returned to your with no 401 error (bug), behind the scene`AuthorizationMiddleware` calls `OpenIdConnectHandler.HandleChallengeAsync()` to repeat the communication to idp, after  `https://localhost:7184/signin-oidc` is handled by client, Client calls `Context.SignInAsync()` again. If you request the resousrce again,  resource will be returned to you (still a bug), and this time `OpenIdConnectHandler.HandleChallengeAsync()` won't be called
 
 
 8. B-Signout process
 
-`https://localhost:5001/connect/endsession` is triggered (sot flag in `OpenIdConnectHandler.SignOutAsync()`),
+Inside Client App like `AuthenticationController` above , triggers `OpenIdConnectHandler.SignOutAsync()` which triggers `https://localhost:5001/connect/endsession` (sot flag),
 
 ```C#
 /*  token_hint is the id token
@@ -277,7 +277,15 @@ https://localhost:5001/connect/endsession?post_logout_redirect_uri=https%3A%2F%2
 */
 ```
 
+then `EndSessionEndpoint` hanldes this `connect/endsession` request, then redircts user to IdentityServer's Logout Razor page
 
+```C#
+/*
+https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053fXDUzUXvku1K6jgfyhhxxx
+*/
+```
+
+9. check `e2` flag you will see inside `/Account/Logout` page, it calls `await HttpContext.SignOutAsync()` which clear out user-idp cookie, i.e clear user session
 
 
 
