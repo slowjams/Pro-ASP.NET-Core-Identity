@@ -231,6 +231,10 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 ```
 
 7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called (o3.2) to get access token and id token), also note that we lose "user = Emma" claim in this process because we use IdToken to generate ClaimsIdentity again and this idToken doesn't contain user name for most of time unless we configure it to. Finally, **Client calls `Context.SignInAsync()` to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
+Note that cookie can be:
+**A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end),
+so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
+**B**: `OpenIdConnectOptions.GetClaimsFromUserInfoEndpoint` is set to `true`, then `OpenIdConnectHandler` will call `https://localhost:5001/connect/userinfo` (access token is required in the bear header with this request) to get userinfo from IDP, the response will contain full user info and is used to created the `AuthenticationTicket`, so now **user-to-client** cookie can contain user info claims such as "name", "role" etc
 
 Important thing to know, in the subsequent requst, only **user-to-client** cookie is needed for user to be authenticated, however if you develop logout functionality by only sign out this 
 user-to-client cooke, it will have issue shows below.
@@ -262,9 +266,9 @@ https://localhost:5001/connect/endsession?post_logout_redirect_uri=https%3A%2F%2
 
 and let's say you didn't clear IDP cookie, and after user click logout and request the resource again, at p1, the user is from IDP cookie, and at P2, it won't be `LoginPageResult` but `AuthorizeResult` (that's why users won't be showed with Login page again), then it just repeats step 6, 7, then user is still seems to be login
 
-A special note on the "user-to-idp cookie" and "user-to-client" cookie. the former is created first on the IdentityServer's end i.e Login page, so the claims will be the data on the signin form (especially the "user = Emma" claim which probably won't be in id token). "user-to-client" cookie however it is created based on id token from idp.
+A special note on the "user-to-idp cookie" and "user-to-client" cookie. the former is created first on the IdentityServer's end i.e Login page, so the claims will be the data on the signin form (especially the "user = Emma" claim which probably won't be in id token). "user-to-client" cookie however it is created based on id token from idp (if `options.GetClaimsFromUserInfoEndpoint = true` then the process is a little bit different check the note above).
 
-So if you don't clear IDP own session/cookie, and request the resource, resource will be returned to your with no 401 error (bug), behind the scene`AuthorizationMiddleware` calls `OpenIdConnectHandler.HandleChallengeAsync()` to repeat the communication to idp, after  `https://localhost:7184/signin-oidc` is handled by client, Client calls `Context.SignInAsync()` again. If you request the resousrce again,  resource will be returned to you (still a bug), and this time `OpenIdConnectHandler.HandleChallengeAsync()` won't be called
+So if you don't clear IDP own session/cookie, and request the resource, resource will be returned to your with no 401 error (bug), behind the scene`AuthorizationMiddleware` calls `OpenIdConnectHandler.HandleChallengeAsync()` to repeat the communication to idp, after `https://localhost:7184/signin-oidc` is handled by client, Client calls `Context.SignInAsync()` again. If you request the resousrce again,  resource will be returned to you (still a bug), and this time `OpenIdConnectHandler.HandleChallengeAsync()` won't be called
 
 
 8. B-Signout process
@@ -288,9 +292,35 @@ https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053f
 9. check `e2` flag you will see inside `/Account/Logout` page, it calls `await HttpContext.SignOutAsync()` which clear out user-idp cookie, i.e clear user session
 
 
+**!!!!!!!!!!!!!!!!Question: what if user-to-client cookie is still valid while access token expired? users are not supporsed to be active state while he can still sign in clientApp, sound weird**
 
 
+=========================================================================
+Before `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`
 
+```C#
+/*
+Claim type: http://schemas.microsoft.com/claims/authnmethodsreferences - Claim value: pwd
+Claim type: sid - Claim value: B0CD6BD2B433776A782B8DA1D17ED4AA
+Claim type: http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier - Claim value: b7539694-97e7-4dfe-84da-b4256e1ff5c7
+Claim type: auth_time - Claim value: 1722512787
+Claim type: http://schemas.microsoft.com/identity/claims/identityprovider - Claim value: local
+Claim type: given_name - Claim value: Emma
+Claim type: family_name - Claim value: Flagg
+*/
+```
+After `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`
+```C#
+/*
+Claim type: amr - Claim value: pwd
+Claim type: sid - Claim value: 8E4BE37574693434DB7CE9FBA0CF616B
+Claim type: sub - Claim value: b7539694-97e7-4dfe-84da-b4256e1ff5c7
+Claim type: auth_time - Claim value: 1722513034
+Claim type: idp - Claim value: local
+Claim type: given_name - Claim value: Emma
+Claim type: family_name - Claim value: Flagg
+*/
+```
 
 
 

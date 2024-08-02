@@ -128,7 +128,7 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
 
     public bool MapInboundClaims { get; set; }  // on _defaultHandler.MapInboundClaims
 
-    public OpenIdConnectOptions()
+    public OpenIdConnectOptions()  // <--------------------------------------------------
     {
         base.CallbackPath = new PathString("/signin-oidc");
         SignedOutCallbackPath = new PathString("/signout-callback-oidc");
@@ -136,12 +136,26 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
         SecurityTokenValidator = _defaultHandler;
         Events = new OpenIdConnectEvents();
         Scope.Add("openid"); Scope.Add("profile");
-        ClaimActions.DeleteClaim("nonce"); ClaimActions.DeleteClaim("aud"); ClaimActions.DeleteClaim("azp"); ClaimActions.DeleteClaim("acr");
-        ClaimActions.DeleteClaim("iss"); ClaimActions.DeleteClaim("iat"); ClaimActions.DeleteClaim("nbf"); ClaimActions.DeleteClaim("exp");
-        ClaimActions.DeleteClaim("at_hash"); ClaimActions.DeleteClaim("c_hash"); ClaimActions.DeleteClaim("ipaddr"); ClaimActions.DeleteClaim("platf");
-        ClaimActions.DeleteClaim("ver");ClaimActions.MapUniqueJsonKey("sub", "sub"); ClaimActions.MapUniqueJsonKey("name", "name");
-        ClaimActions.MapUniqueJsonKey("given_name", "given_name"); ClaimActions.MapUniqueJsonKey("family_name", "family_name");
-        ClaimActions.MapUniqueJsonKey("profile", "profile"); ClaimActions.MapUniqueJsonKey("email", "email");
+        ClaimActions.DeleteClaim("nonce"); 
+        ClaimActions.DeleteClaim("aud"); // <------------------------------------------------oica
+        ClaimActions.DeleteClaim("azp"); 
+        ClaimActions.DeleteClaim("acr");
+        ClaimActions.DeleteClaim("iss"); 
+        ClaimActions.DeleteClaim("iat"); 
+        ClaimActions.DeleteClaim("nbf");
+        ClaimActions.DeleteClaim("exp");
+        ClaimActions.DeleteClaim("at_hash");
+        ClaimActions.DeleteClaim("c_hash");
+        ClaimActions.DeleteClaim("ipaddr");
+        ClaimActions.DeleteClaim("platf");
+        ClaimActions.DeleteClaim("ver");
+        ClaimActions.MapUniqueJsonKey("sub", "sub"); 
+        ClaimActions.MapUniqueJsonKey("name", "name");
+        ClaimActions.MapUniqueJsonKey("given_name", "given_name"); 
+        ClaimActions.MapUniqueJsonKey("family_name", "family_name");
+        ClaimActions.MapUniqueJsonKey("profile", "profile"); 
+        ClaimActions.MapUniqueJsonKey("email", "email");  // <----------------------------oica
+
         _nonceCookieBuilder = new OpenIdConnectNonceCookieBuilder(this)
         {
             Name = OpenIdConnectDefaults.CookieNoncePrefix,
@@ -843,7 +857,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 if (!Options.UseSecurityTokenValidator)
                 {
                     var tokenValidationResult = 
-                        await ValidateTokenUsingHandlerAsync(tokenEndpointResponse.IdToken, properties, validationParameters);   // <---------use IdToken to create ClaimIdentity
+                        await ValidateTokenUsingHandlerAsync(tokenEndpointResponse.IdToken, properties, validationParameters);   // <---------!!!!!!use IdToken to create ClaimIdentity
                     
                     tokenEndpointUser = new ClaimsPrincipal(tokenValidationResult.ClaimsIdentity);   // <----------------------------------------o4.0
                     
@@ -903,16 +917,18 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 SaveTokens(properties!, tokenEndpointResponse ?? authorizationResponse);  // <----------------------------------------o4.2
             }
 
-            if (Options.GetClaimsFromUserInfoEndpoint)
+            if (Options.GetClaimsFromUserInfoEndpoint)  // when `options.GetClaimsFromUserInfoEndpoint = true`
             {
                 return await GetUserInformationAsync(tokenEndpointResponse ?? authorizationResponse, jwt!, user!, properties!);  // <----------------------o4.4
+                // note that we return here immediately compared to o4.8, the AuthenticationTicket in o4.8 is created from id token
+                // while here we get full user claims into AuthenticationTicket then into cookie
             }
             else
             {
                 using (var payload = JsonDocument.Parse("{}"))
                 {
                     var identity = (ClaimsIdentity)user!.Identity!;
-                    foreach (var action in Options.ClaimActions)
+                    foreach (var action in Options.ClaimActions)  // <-----------------------mjk
                     {
                         action.Run(payload.RootElement, identity, ClaimsIssuer);
                     }
@@ -1057,7 +1073,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         ClaimsPrincipal principal,
          AuthenticationProperties properties)
     {
-        string text = _configuration?.UserInfoEndpoint;   // <-------------------4.5 https://localhost:5001/connect/userinfo
+        string text = _configuration?.UserInfoEndpoint;   // <-------------------o4.5 https://localhost:5001/connect/userinfo
         if (string.IsNullOrEmpty(text))
         {
             base.Logger.UserInfoEndpointNotSet();
@@ -1076,8 +1092,8 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
 
         HttpResponseMessage responseMessage =  
-            await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <-------------------4.6 call IDP on https://localhost:5001/connect/userinfo
-        
+            await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <-------------------o4.6 call IDP on https://localhost:5001/connect/userinfo
+                                                                                           // note that we need AccessToken for the UserInfoEndpoint in IDP
         responseMessage.EnsureSuccessStatusCode();
 
         string userInfoResponse = await responseMessage.Content.ReadAsStringAsync(base.Context.RequestAborted);
@@ -1121,7 +1137,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         }
 
         return HandleRequestResult.Success(
-            new AuthenticationTicket(principal, properties, base.Scheme.Name)  // <-----------------4.7 now you see why user-client cookie contains name = Emma claim, while id token 
+            new AuthenticationTicket(principal, properties, base.Scheme.Name)  // <-----------------o4.7 now you see why user-client cookie contains name = Emma claim, while id token 
         );                                                                     // still doesn't have name = Emma, because we call UserInfoEndpoint to get more claims  and it is not
     }                                                                          // a good practice to contains user info, the url will be lengthy, some old browser might not support it
 
@@ -1665,6 +1681,299 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
     }
 }
 //---------------------------------------------------------Ʌ
+```
+
+```C#
+//--------------------------------V
+public abstract class TokenHandler
+{
+    private int _defaultTokenLifetimeInMinutes = DefaultTokenLifetimeInMinutes;
+    private int _maximumTokenSizeInBytes = 256000;
+    public static readonly int DefaultTokenLifetimeInMinutes = 60;
+    public virtual int MaximumTokenSizeInBytes
+    {
+        get
+        {
+            return _maximumTokenSizeInBytes;
+        }
+        set
+        {
+            if (value < 1)
+            {
+                throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException("value", LogHelper.FormatInvariant("IDX10101: MaximumTokenSizeInBytes must be greater than zero. value: '{0}'", LogHelper.MarkAsNonPII(value))));
+            }
+
+            _maximumTokenSizeInBytes = value;
+        }
+    }
+
+    [DefaultValue(true)]
+    public bool SetDefaultTimesOnTokenCreation { get; set; } = true;
+
+    public int TokenLifetimeInMinutes
+    {
+        get
+        {
+            return _defaultTokenLifetimeInMinutes;
+        }
+        set
+        {
+            if (value < 1)
+            {
+                throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException("value", LogHelper.FormatInvariant("IDX10104: TokenLifetimeInMinutes must be greater than zero. value: '{0}'", LogHelper.MarkAsNonPII(value))));
+            }
+
+            _defaultTokenLifetimeInMinutes = value;
+        }
+    }
+
+    public virtual Task<TokenValidationResult> ValidateTokenAsync(string token, TokenValidationParameters validationParameters) => throw new NotImplementedException();
+    public virtual Task<TokenValidationResult> ValidateTokenAsync(SecurityToken token, TokenValidationParameters validationParameters)  => throw new NotImplementedException();
+    public virtual SecurityToken ReadToken(string token)  => throw new NotImplementedException();
+    internal virtual ClaimsIdentity CreateClaimsIdentityInternal(SecurityToken securityToken, TokenValidationParameters tokenValidationParameters, string issuer) 
+        => throw new NotImplementedException();
+}
+//--------------------------------Ʌ
+
+//------------------------------------V
+internal static class ClaimTypeMapping
+{
+    private static readonly Dictionary<string, string> shortToLongClaimTypeMapping;
+    private static readonly Dictionary<string, string> longToShortClaimTypeMapping;
+    private static readonly HashSet<string> inboundClaimFilter;
+    public static IDictionary<string, string> InboundClaimTypeMap => shortToLongClaimTypeMapping;
+    public static IDictionary<string, string> OutboundClaimTypeMap => longToShortClaimTypeMapping;
+
+    public static ISet<string> InboundClaimFilter => inboundClaimFilter;
+
+    static ClaimTypeMapping()
+    {
+        shortToLongClaimTypeMapping = new Dictionary<string, string>
+        {
+            { "actort", "http://schemas.xmlsoap.org/ws/2009/09/identity/claims/actor" },
+            { "birthdate", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/dateofbirth" },
+            { "email", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" },
+            { "family_name", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname" },
+            { "gender", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/gender" },
+            { "given_name", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname" },
+            { "nameid", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier" },
+            { "sub", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier" },
+            { "website", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/webpage" },
+            { "unique_name", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name" },
+            { "oid", "http://schemas.microsoft.com/identity/claims/objectidentifier" },
+            { "scp", "http://schemas.microsoft.com/identity/claims/scope" },
+            { "commonname", "http://schemas.xmlsoap.org/claims/CommonName" },
+            { "denyonlyprimarygroupsid", "http://schemas.microsoft.com/ws/2008/06/identity/claims/denyonlyprimarygroupsid" },
+            { "deviceid", "http://schemas.microsoft.com/2012/01/devicecontext/claims/identifier" },
+            { "group", "http://schemas.xmlsoap.org/claims/Group" },
+            { "groupsid", "http://schemas.microsoft.com/ws/2008/06/identity/claims/groupsid" },
+            { "idp", "http://schemas.microsoft.com/identity/claims/identityprovider" },
+            { "role", "http://schemas.microsoft.com/ws/2008/06/identity/claims/role" },
+            { "roles", "http://schemas.microsoft.com/ws/2008/06/identity/claims/role" },
+            // ...
+        };
+        longToShortClaimTypeMapping = new Dictionary<string, string>();
+        inboundClaimFilter = (inboundClaimFilter = new HashSet<string>());
+        foreach (KeyValuePair<string, string> item in shortToLongClaimTypeMapping)
+        {
+            if (!longToShortClaimTypeMapping.ContainsKey(item.Value))
+            {
+                longToShortClaimTypeMapping.Add(item.Value, item.Key);
+            }
+        }
+    }
+}
+//------------------------------------Ʌ
+
+//------------------------------V
+public class JsonWebTokenHandler : TokenHandler
+{
+    private IDictionary<string, string> _inboundClaimTypeMap;
+    private const string _namespace = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties";
+    private static string _shortClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties/ShortTypeName";
+    private bool _mapInboundClaims = DefaultMapInboundClaims;
+    public static IDictionary<string, string> DefaultInboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.InboundClaimTypeMap);
+    public static bool DefaultMapInboundClaims = false;
+    public const string Base64UrlEncodedUnsignedJWSHeader = "eyJhbGciOiJub25lIn0";
+    public Type TokenType => typeof(JsonWebToken);
+    public IDictionary<string, string> InboundClaimTypeMap { get; set; }
+    public virtual bool CanValidateToken { get; }
+    
+    public virtual bool CanReadToken(string token);
+    public virtual string CreateToken(SecurityTokenDescriptor tokenDescriptor);
+    public virtual string CreateToken(string payload);
+    public virtual string CreateToken(string payload, IDictionary<string, object> additionalHeaderClaims);
+    public virtual string CreateToken(string payload, SigningCredentials signingCredentials, IDictionary<string, object> additionalHeaderClaims);
+    public virtual string CreateToken(string payload, SigningCredentials signingCredentials);
+    public string EncryptToken(string innerJwt, EncryptingCredentials encryptingCredentials, string algorithm, IDictionary<string, object> additionalHeaderClaims);
+    public virtual JsonWebToken ReadJsonWebToken(string token);
+    public override SecurityToken ReadToken(string token);
+    public virtual TokenValidationResult ValidateToken(string token, TokenValidationParameters validationParameters);
+    protected virtual ClaimsIdentity CreateClaimsIdentity(JsonWebToken jwtToken, TokenValidationParameters validationParameters, string issuer);
+    protected virtual SecurityKey ResolveTokenDecryptionKey(string token, JsonWebToken jwtToken, TokenValidationParameters validationParameters);
+    // ...
+}
+//------------------------------Ʌ
+```
+
+```C#
+//----------------------------------------------------V
+public static class ClaimActionCollectionMapExtensions
+{ 
+    // ...
+    public static void MapJsonKey(this ClaimActionCollection collection, string claimType, string jsonKey)
+    {
+        collection.MapJsonKey(claimType, jsonKey, ClaimValueTypes.String);
+    }
+
+    // can be multiple same claim as  { role: "admin" } { role: "vip" }, check oica flag; IsInRole can be used
+    public static void MapJsonKey(this ClaimActionCollection collection, string claimType, string jsonKey, string valueType)
+    {
+        collection.Add(new JsonKeyClaimAction(claimType, valueType, jsonKey));
+    }
+
+    // it merge multiple same name claims into ine single claim which is like array e.g { role: ["admin", "vip" ] } compared to MapJsonKey; IsInRole cannot be used
+    public static void MapUniqueJsonKey(this ClaimActionCollection collection, string claimType, string jsonKey, string valueType)
+    {
+        collection.Add(new UniqueJsonKeyClaimAction(claimType, valueType, jsonKey));
+    }
+
+    public static void MapAll(this ClaimActionCollection collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+
+        collection.Clear();
+        collection.Add(new MapAllClaimsAction());
+    }
+
+    public static void MapAllExcept(this ClaimActionCollection collection, params string[] exclusions)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+
+        collection.MapAll();
+        collection.DeleteClaims(exclusions);
+    }
+
+    public static void DeleteClaim(this ClaimActionCollection collection, string claimType)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+
+        collection.Add(new DeleteClaimAction(claimType));
+    }
+
+    public static void DeleteClaims(this ClaimActionCollection collection, params string[] claimTypes)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        ArgumentNullException.ThrowIfNull(claimTypes);
+
+        foreach (var claimType in claimTypes)
+        {
+            collection.Add(new DeleteClaimAction(claimType));
+        }
+    }
+}
+//----------------------------------------------------Ʌ
+//-------------------------------V
+public abstract class ClaimAction
+{
+    public ClaimAction(string claimType, string valueType)
+    {
+        ClaimType = claimType;
+        ValueType = valueType;
+    }>
+    public string ClaimType { get; }
+    public string ValueType { get; }
+    public abstract void Run(JsonElement userData, ClaimsIdentity identity, string issuer);
+}
+
+public class DeleteClaimAction : ClaimAction
+{
+    public DeleteClaimAction(string claimType)
+        : base(claimType, ClaimValueTypes.String)
+    {
+    }
+
+    public override void Run(JsonElement userData, ClaimsIdentity identity, string issuer)
+    {
+        foreach (var claim in identity.FindAll(ClaimType).ToList())
+        {
+            identity.TryRemoveClaim(claim);
+        }
+    }
+}
+
+public class JsonKeyClaimAction : ClaimAction
+{
+    public JsonKeyClaimAction(string claimType, string valueType, string jsonKey) : base(claimType, valueType)
+    {
+        JsonKey = jsonKey;
+    }
+
+    public string JsonKey { get; }
+
+    public override void Run(JsonElement userData, ClaimsIdentity identity, string issuer)
+    {
+        if (!userData.TryGetProperty(JsonKey, out var value))
+        {
+            return;
+        }
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var v in value.EnumerateArray())
+            {
+                AddClaim(v.ToString()!, identity, issuer);
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Object || value.ValueKind == JsonValueKind.Undefined)
+        {
+            // Skip, because they were previously skipped
+        }
+        else
+        {
+            AddClaim(value.ToString()!, identity, issuer);
+        }
+    }
+
+    private protected void AddClaim(string value, ClaimsIdentity identity, string issuer)
+    {
+        if (!string.IsNullOrEmpty(value))
+        {
+            identity.AddClaim(new Claim(ClaimType, value, ValueType, issuer));  // <------------------mjk
+        }
+    }
+}
+//-------------------------------Ʌ
+
+//--------------------------------V
+public class ClaimActionCollection : IEnumerable<ClaimAction>
+{
+    private IList<ClaimAction> Actions { get; } = new List<ClaimAction>();
+
+    public void Clear() => Actions.Clear();
+
+
+    public void Remove(string claimType)
+    {
+        var itemsToRemove = Actions.Where(map => string.Equals(claimType, map.ClaimType, StringComparison.OrdinalIgnoreCase)).ToList();
+        itemsToRemove.ForEach(map => Actions.Remove(map));
+    }
+
+    public void Add(ClaimAction action)
+    {
+        Actions.Add(action);
+    }
+
+    public IEnumerator<ClaimAction> GetEnumerator()
+    {
+        return Actions.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return Actions.GetEnumerator();
+    }
+}
+//--------------------------------Ʌ
 ```
 
 ```C#

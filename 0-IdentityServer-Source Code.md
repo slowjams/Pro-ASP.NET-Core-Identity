@@ -940,7 +940,7 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
 //-------------------------------------Ʌ
 
 //-----------------------------V
-internal class UserInfoEndpoint : IEndpointHandler
+internal class UserInfoEndpoint : IEndpointHandler    // handles /connect/userinfo
 {
     private readonly BearerTokenUsageValidator _tokenUsageValidator;
     private readonly IUserInfoRequestValidator _requestValidator;
@@ -966,15 +966,15 @@ internal class UserInfoEndpoint : IEndpointHandler
             return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
         }
 
-        return await ProcessUserInfoRequestAsync(context);
+        return await ProcessUserInfoRequestAsync(context);   // <------------------------------u1
     }
 
-    private async Task<IEndpointResult> ProcessUserInfoRequestAsync(HttpContext context)
+    private async Task<IEndpointResult> ProcessUserInfoRequestAsync(HttpContext context)  // <------------------------------u1
     {
         _logger.LogDebug("Start userinfo request");
 
         // userinfo requires an access token on the request
-        var tokenUsageResult = await _tokenUsageValidator.ValidateAsync(context);
+        var tokenUsageResult = await _tokenUsageValidator.ValidateAsync(context);  // <------------------------------u1.1 userinfo requires an access token on the request
         if (tokenUsageResult.TokenFound == false)
         {
             var error = "No access token found.";
@@ -985,8 +985,8 @@ internal class UserInfoEndpoint : IEndpointHandler
 
         // validate the request
         _logger.LogTrace("Calling into userinfo request validator: {type}", _requestValidator.GetType().FullName);
-        var validationResult = await _requestValidator.ValidateRequestAsync(tokenUsageResult.Token);
-
+        var validationResult = await _requestValidator.ValidateRequestAsync(tokenUsageResult.Token);  // <------------------------------u1.2
+ 
         if (validationResult.IsError)
         {
             //_logger.LogError("Error validating  validationResult.Error);
@@ -995,11 +995,11 @@ internal class UserInfoEndpoint : IEndpointHandler
 
         // generate response
         _logger.LogTrace("Calling into userinfo response generator: {type}", _responseGenerator.GetType().FullName);
-        var response = await _responseGenerator.ProcessAsync(validationResult);  // <---------------------------------------
+        var response = await _responseGenerator.ProcessAsync(validationResult);  // <---------------------------------------u1.3
 
         _logger.LogDebug("End userinfo request");
 
-        return new UserInfoResult(response);
+        return new UserInfoResult(response);  // <----------------------u1.7
     }
 
     private IEndpointResult Error(string error, string description = null) => new ProtectedResourceErrorResult(error, description);
@@ -2770,7 +2770,7 @@ public class UserInfoResponseGenerator : IUserInfoResponseGenerator
         Logger = logger;
     }
 
-    public virtual async Task<Dictionary<string, object>> ProcessAsync(UserInfoRequestValidationResult validationResult)
+    public virtual async Task<Dictionary<string, object>> ProcessAsync(UserInfoRequestValidationResult validationResult)  // <---------------------u1.4
     {
         using var activity = Tracing.BasicActivitySource.StartActivity("UserInfoResponseGenerator.Process");
         
@@ -2780,8 +2780,10 @@ public class UserInfoResponseGenerator : IUserInfoResponseGenerator
         var scopes = validationResult.TokenValidationResult.Claims.Where(c => c.Type == JwtClaimTypes.Scope).Select(c => c.Value);
 
         var validatedResources = await GetRequestedResourcesAsync(scopes);
-        var requestedClaimTypes = await GetRequestedClaimTypesAsync(validatedResources);
-
+        var requestedClaimTypes = await GetRequestedClaimTypesAsync(validatedResources);  // <---------------------u1.5
+        /* requestedClaimTypes contains
+           "sub", "name", "given_name", "family_name", "profile", "role" and so on
+        */
         Logger.LogDebug("Requested claim types: {claimTypes}", requestedClaimTypes.ToSpaceSeparatedString());
 
         // call profile service
@@ -2792,9 +2794,9 @@ public class UserInfoResponseGenerator : IUserInfoResponseGenerator
             requestedClaimTypes);
         context.RequestedResources = validatedResources;
 
-        await Profile.GetProfileDataAsync(context);  // <---------------------------------
-        var profileClaims = context.IssuedClaims;
-
+        await Profile.GetProfileDataAsync(context);  // <---------------------------------u1.6
+        var profileClaims = context.IssuedClaims;    //  IssuedClaims contains {role: PayingUser}, {given_name: Emma}, {family_name: Flagg}
+       
         // construct outgoing claims
         var outgoingClaims = new List<Claim>();
 
@@ -3426,13 +3428,13 @@ public class TestUserProfileService : IProfileService
         Logger = logger;
     }
 
-    public virtual Task GetProfileDataAsync(ProfileDataRequestContext context)
+    public virtual Task GetProfileDataAsync(ProfileDataRequestContext context)  // <-----------------------u1.6
     {
         context.LogProfileRequest(Logger);
 
         if (context.RequestedClaimTypes.Any())
         {
-            var user = Users.FindBySubjectId(context.Subject.GetSubjectId());
+            var user = Users.FindBySubjectId(context.Subject.GetSubjectId());   // <-----------------------u1.6.1.
             if (user != null)
             {
                 context.AddRequestedClaims(user.Claims);
