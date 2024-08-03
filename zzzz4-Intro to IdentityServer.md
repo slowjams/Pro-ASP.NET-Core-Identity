@@ -292,7 +292,7 @@ https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053f
 9. check `e2` flag you will see inside `/Account/Logout` page, it calls `await HttpContext.SignOutAsync()` which clear out user-idp cookie, i.e clear user session
 
 
-**!!!!!!!!!!!!!!!!Question: what if user-to-client cookie is still valid while access token expired? users are not supporsed to be active state while he can still sign in clientApp, sound weird**
+**!!!!!!!!!!!!!!!!Question: what if user-to-client cookie is still valid while access token expired? users are not supporsed to be active state while he can still sign in clientApp, sound weird or AuthenticationTicket created by client, the expire is set to match token expiry?**
 
 
 =========================================================================

@@ -28,7 +28,7 @@ public class Program
             options.Scope.Add("openid");
             options.Scope.Add("profile");
 
-            options.MapInboundClaims = false;
+            options.MapInboundClaims = false;  // jcm
             options.SaveTokens = true;
         });
 
@@ -48,31 +48,13 @@ public class Program
 //-------------------------------V
 public class OpenIdConnectOptions : RemoteAuthenticationOptions
 {
-    private class OpenIdConnectNonceCookieBuilder : RequestPathBaseCookieBuilder
-    {
-        private readonly OpenIdConnectOptions _options;
-
-        protected override string AdditionalPath => _options.CallbackPath;
-
-        public OpenIdConnectNonceCookieBuilder(OpenIdConnectOptions oidcOptions)
-        {
-            _options = oidcOptions;
-        }
-
-        public override CookieOptions Build(HttpContext context, DateTimeOffset expiresFrom)
-        {
-            CookieOptions cookieOptions = base.Build(context, expiresFrom);
-            if (!Expiration.HasValue || !cookieOptions.Expires.HasValue)
-            {
-                cookieOptions.Expires = expiresFrom.Add(_options.ProtocolValidator.NonceLifetime);
-            }
-
-            return cookieOptions;
-        }
-    }
-
     private CookieBuilder _nonceCookieBuilder;
     private readonly JwtSecurityTokenHandler _defaultHandler = new JwtSecurityTokenHandler();
+    private readonly JsonWebTokenHandler _defaultTokenHandler = new JsonWebTokenHandler
+    {
+        MapInboundClaims = JwtSecurityTokenHandler.DefaultMapInboundClaims
+    };
+    private bool _mapInboundClaims = JwtSecurityTokenHandler.DefaultMapInboundClaims;
 
     public string? Authority { get; set; }
     public string? ClientId { get; set; }
@@ -126,7 +108,16 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
     public TimeSpan AutomaticRefreshInterval { get; set; } = ConfigurationManager<OpenIdConnectConfiguration>.DefaultAutomaticRefreshInterval;
     public TimeSpan RefreshInterval { get; set; } = ConfigurationManager<OpenIdConnectConfiguration>.DefaultRefreshInterval;
 
-    public bool MapInboundClaims { get; set; }  // on _defaultHandler.MapInboundClaims
+    public bool MapInboundClaims   // jcm, on _defaultHandler.MapInboundClaims
+    {
+        get => _mapInboundClaims;
+        set
+        {
+            _mapInboundClaims = value;
+            _defaultHandler.MapInboundClaims = value;
+            _defaultTokenHandler.MapInboundClaims = value;
+        }
+    }
 
     public OpenIdConnectOptions()  // <--------------------------------------------------
     {
@@ -170,6 +161,29 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
     {     
         base.Validate();
         // ... validate  MaxAge.HasValue && MaxAge.Value < TimeSpan.Zero, IsNullOrEmpty on ClientId, CallbackPath.HasValue, ConfigurationManager     
+    }
+
+    private class OpenIdConnectNonceCookieBuilder : RequestPathBaseCookieBuilder
+    {
+        private readonly OpenIdConnectOptions _options;
+
+        protected override string AdditionalPath => _options.CallbackPath;
+
+        public OpenIdConnectNonceCookieBuilder(OpenIdConnectOptions oidcOptions)
+        {
+            _options = oidcOptions;
+        }
+
+        public override CookieOptions Build(HttpContext context, DateTimeOffset expiresFrom)
+        {
+            CookieOptions cookieOptions = base.Build(context, expiresFrom);
+            if (!Expiration.HasValue || !cookieOptions.Expires.HasValue)
+            {
+                cookieOptions.Expires = expiresFrom.Add(_options.ProtocolValidator.NonceLifetime);
+            }
+
+            return cookieOptions;
+        }
     }
 }
 //-------------------------------Ʌ
@@ -1792,13 +1806,34 @@ public class JsonWebTokenHandler : TokenHandler
     private const string _namespace = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties";
     private static string _shortClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties/ShortTypeName";
     private bool _mapInboundClaims = DefaultMapInboundClaims;
-    public static IDictionary<string, string> DefaultInboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.InboundClaimTypeMap);
+    public static IDictionary<string, string> DefaultInboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.InboundClaimTypeMap);  // <---------
     public static bool DefaultMapInboundClaims = false;
     public const string Base64UrlEncodedUnsignedJWSHeader = "eyJhbGciOiJub25lIn0";
     public Type TokenType => typeof(JsonWebToken);
     public IDictionary<string, string> InboundClaimTypeMap { get; set; }
     public virtual bool CanValidateToken { get; }
     
+    public JsonWebTokenHandler()
+    {
+        if (_mapInboundClaims)
+            _inboundClaimTypeMap = new Dictionary<string, string>(DefaultInboundClaimTypeMap);
+        else
+            _inboundClaimTypeMap = new Dictionary<string, string>();
+    }
+
+    public bool MapInboundClaims  // jcm, default value is false
+    {
+        get {
+            return _mapInboundClaims;
+        }
+            
+        set {
+            if (!_mapInboundClaims && value && _inboundClaimTypeMap.Count == 0)
+                _inboundClaimTypeMap = new Dictionary<string, string>(DefaultInboundClaimTypeMap);
+
+            _mapInboundClaims = value;
+        }
+    }
     public virtual bool CanReadToken(string token);
     public virtual string CreateToken(SecurityTokenDescriptor tokenDescriptor);
     public virtual string CreateToken(string payload);
@@ -1814,6 +1849,575 @@ public class JsonWebTokenHandler : TokenHandler
     // ...
 }
 //------------------------------Ʌ
+
+//----------------------------------V
+public class JwtSecurityTokenHandler : SecurityTokenHandler
+{
+    private delegate bool CertMatcher(X509Certificate2 cert);
+
+    private ISet<string> _inboundClaimFilter;
+
+    private IDictionary<string, string> _inboundClaimTypeMap;
+
+    private static string _jsonClaimType;
+
+    private const string _namespace = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties";
+
+    private const string _className = "System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler";
+
+    private IDictionary<string, string> _outboundClaimTypeMap;
+    private Dictionary<string, string> _outboundAlgorithmMap;
+    private static string _shortClaimType;
+    private bool _mapInboundClaims = DefaultMapInboundClaims;
+    public static IDictionary<string, string> DefaultInboundClaimTypeMap;
+    public static bool DefaultMapInboundClaims;
+    public static IDictionary<string, string> DefaultOutboundClaimTypeMap;
+    public static ISet<string> DefaultInboundClaimFilter;
+    public static IDictionary<string, string> DefaultOutboundAlgorithmMap;
+
+    public bool MapInboundClaims
+    {
+        get {
+            return _mapInboundClaims;
+        }
+        set {
+            if (!_mapInboundClaims && value && _inboundClaimTypeMap.Count == 0)
+            {
+                _inboundClaimTypeMap = new Dictionary<string, string>(DefaultInboundClaimTypeMap);
+            }
+
+            _mapInboundClaims = value;
+        }
+    }
+
+    public IDictionary<string, string> InboundClaimTypeMap  { get; set; }   // _inboundClaimTypeMap
+    public IDictionary<string, string> OutboundClaimTypeMap { get; set; }   // on _outboundClaimTypeMap
+    public IDictionary<string, string> OutboundAlgorithmMap => _outboundAlgorithmMap;
+    public ISet<string> InboundClaimFilter { get; set; }       // on _inboundClaimFilter
+    public static string ShortClaimTypeProperty { get; set; }  // on _shortClaimType
+    public static string JsonClaimTypeProperty { get; set; }   // on _jsonClaimType
+
+    public override bool CanValidateToken => true;
+    public override bool CanWriteToken => true;
+    public override Type TokenType => typeof(JwtSecurityToken);
+
+    static JwtSecurityTokenHandler()
+    {
+        _jsonClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties/json_type";
+        _shortClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties/ShortTypeName";
+        DefaultInboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.InboundClaimTypeMap);
+        DefaultMapInboundClaims = true;
+        DefaultOutboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.OutboundClaimTypeMap);
+        DefaultInboundClaimFilter = ClaimTypeMapping.InboundClaimFilter;
+        DefaultOutboundAlgorithmMap = new Dictionary<string, string>
+        {
+            { "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256", "ES256" },
+            { "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha384", "ES384" },
+            { "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha512", "ES512" },
+            { "http://www.w3.org/2001/04/xmldsig-more#hmac-sha256", "HS256" },
+            { "http://www.w3.org/2001/04/xmldsig-more#hmac-sha384", "HS384" },
+            { "http://www.w3.org/2001/04/xmldsig-more#hmac-sha512", "HS512" },
+            { "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256", "RS256" },
+            { "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384", "RS384" },
+            { "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512", "RS512" }
+        };
+    }
+
+    public JwtSecurityTokenHandler()
+    {
+        if (_mapInboundClaims)
+        {
+            _inboundClaimTypeMap = new Dictionary<string, string>(DefaultInboundClaimTypeMap);
+        }
+        else
+        {
+            _inboundClaimTypeMap = new Dictionary<string, string>();
+        }
+
+        _outboundClaimTypeMap = new Dictionary<string, string>(DefaultOutboundClaimTypeMap);
+        _inboundClaimFilter = new HashSet<string>(DefaultInboundClaimFilter);
+        _outboundAlgorithmMap = new Dictionary<string, string>(DefaultOutboundAlgorithmMap);
+    }
+
+    public override bool CanReadToken(string token);
+
+    public virtual JwtSecurityToken CreateJwtSecurityToken(string issuer = null, string audience = null, ClaimsIdentity subject = null, DateTime? notBefore = null, DateTime? expires = null, DateTime? issuedAt = null, SigningCredentials signingCredentials = null)
+    {
+        return CreateJwtSecurityTokenPrivate(issuer, audience, subject, notBefore, expires, issuedAt, signingCredentials, null, null, null, null, null);
+    }
+
+    public override SecurityToken CreateToken(SecurityTokenDescriptor tokenDescriptor)
+    {
+        if (tokenDescriptor == null)
+        {
+            throw LogHelper.LogArgumentNullException("tokenDescriptor");
+        }
+
+        return CreateJwtSecurityTokenPrivate(tokenDescriptor.Issuer, tokenDescriptor.Audience, tokenDescriptor.Subject, tokenDescriptor.NotBefore, tokenDescriptor.Expires, tokenDescriptor.IssuedAt, tokenDescriptor.SigningCredentials, tokenDescriptor.EncryptingCredentials, tokenDescriptor.Claims, tokenDescriptor.TokenType, tokenDescriptor.AdditionalHeaderClaims, tokenDescriptor.AdditionalInnerHeaderClaims);
+    }
+
+    private JwtSecurityToken CreateJwtSecurityTokenPrivate(string issuer, string audience, ClaimsIdentity subject, DateTime? notBefore, DateTime? expires, DateTime? issuedAt, SigningCredentials signingCredentials, EncryptingCredentials encryptingCredentials, IDictionary<string, object> claimCollection, string tokenType, IDictionary<string, object> additionalHeaderClaims, IDictionary<string, object> additionalInnerHeaderClaims)
+    {
+        if (base.SetDefaultTimesOnTokenCreation && (!expires.HasValue || !issuedAt.HasValue || !notBefore.HasValue))
+        {
+            DateTime utcNow = DateTime.UtcNow;
+            if (!expires.HasValue)
+            {
+                expires = utcNow + TimeSpan.FromMinutes(base.TokenLifetimeInMinutes);
+            }
+
+            if (!issuedAt.HasValue)
+            {
+                issuedAt = utcNow;
+            }
+
+            if (!notBefore.HasValue)
+            {
+                notBefore = utcNow;
+            }
+        }
+
+        if (LogHelper.IsEnabled(EventLogLevel.Verbose))
+        {
+            LogHelper.LogVerbose("IDX12721: Creating JwtSecurityToken: Issuer: '{0}', Audience: '{1}'", LogHelper.MarkAsNonPII(issuer ?? "null"), LogHelper.MarkAsNonPII(audience ?? "null"));
+        }
+
+        JwtPayload jwtPayload = new JwtPayload(issuer, audience, (subject == null) ? null : OutboundClaimTypeTransform(subject.Claims), (claimCollection == null) ? null : OutboundClaimTypeTransform(claimCollection), notBefore, expires, issuedAt);
+        JwtHeader jwtHeader = new JwtHeader(signingCredentials, OutboundAlgorithmMap, tokenType, additionalInnerHeaderClaims);
+        if (subject?.Actor != null)
+        {
+            jwtPayload.AddClaim(new Claim("actort", CreateActorValue(subject.Actor)));
+        }
+
+        string text = jwtHeader.Base64UrlEncode();
+        string text2 = jwtPayload.Base64UrlEncode();
+        string rawSignature = string.Empty;
+        if (signingCredentials != null)
+        {
+            rawSignature = JwtTokenUtilities.CreateEncodedSignature(text + "." + text2, signingCredentials);
+        }
+
+        if (LogHelper.IsEnabled(EventLogLevel.Informational))
+        {
+            LogHelper.LogInformation("IDX12722: Creating security token from the header: '{0}', payload: '{1}'.", text, text2);
+        }
+
+        if (encryptingCredentials != null)
+        {
+            return EncryptToken(new JwtSecurityToken(jwtHeader, jwtPayload, text, text2, rawSignature), encryptingCredentials, tokenType, additionalHeaderClaims);
+        }
+
+        return new JwtSecurityToken(jwtHeader, jwtPayload, text, text2, rawSignature);
+    }
+
+    private JwtSecurityToken EncryptToken(JwtSecurityToken innerJwt, EncryptingCredentials encryptingCredentials, string tokenType, IDictionary<string, object> additionalHeaderClaims);
+
+    private IEnumerable<Claim> OutboundClaimTypeTransform(IEnumerable<Claim> claims)
+    {
+        foreach (Claim claim in claims)
+        {
+            string value = null;
+            if (_outboundClaimTypeMap.TryGetValue(claim.Type, out value))
+            {
+                yield return new Claim(value, claim.Value, claim.ValueType, claim.Issuer, claim.OriginalIssuer, claim.Subject);
+            }
+            else
+            {
+                yield return claim;
+            }
+        }
+    }
+
+    private Dictionary<string, object> OutboundClaimTypeTransform(IDictionary<string, object> claimCollection)
+    {
+        Dictionary<string, object> dictionary = new Dictionary<string, object>();
+        foreach (string key in claimCollection.Keys)
+        {
+            if (_outboundClaimTypeMap.TryGetValue(key, out var value))
+            {
+                dictionary[value] = claimCollection[key];
+            }
+            else
+            {
+                dictionary[key] = claimCollection[key];
+            }
+        }
+
+        return dictionary;
+    }
+
+    public JwtSecurityToken ReadJwtToken(string token);
+
+    public override SecurityToken ReadToken(string token) => return ReadJwtToken(token);
+
+    public override SecurityToken ReadToken(XmlReader reader, TokenValidationParameters validationParameters) => throw new NotImplementedException();
+
+    public override ClaimsPrincipal ValidateToken(string token, TokenValidationParameters validationParameters, out SecurityToken validatedToken);
+  
+    // Returns:
+    //     A System.Security.Claims.ClaimsPrincipal from the JWT. Does not include claims
+    //     found in the JWT header.
+    private ClaimsPrincipal ValidateToken(string token, JwtSecurityToken outerToken, TokenValidationParameters validationParameters, out SecurityToken signatureValidatedToken)
+    {
+        BaseConfiguration baseConfiguration = null;
+        if (validationParameters.ConfigurationManager != null)
+        {
+            try
+            {
+                baseConfiguration = validationParameters.ConfigurationManager.GetBaseConfigurationAsync(CancellationToken.None).ConfigureAwait(continueOnCapturedContext: false).GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception ex)
+            {
+                if (LogHelper.IsEnabled(EventLogLevel.Warning))
+                {
+                    LogHelper.LogWarning(LogHelper.FormatInvariant("IDX10261: Unable to retrieve configuration from authority: '{0}'. \nProceeding with token validation in case the relevant properties have been set manually on the TokenValidationParameters. Exception caught: \n {1}. See https://aka.ms/validate-using-configuration-manager for additional information.", LogHelper.MarkAsNonPII(validationParameters.ConfigurationManager.MetadataAddress), ex.ToString()));
+                }
+            }
+        }
+
+        ExceptionDispatchInfo exceptionThrown;
+        ClaimsPrincipal claimsPrincipal = ((outerToken != null) ? ValidateJWE(token, outerToken, validationParameters, baseConfiguration, out signatureValidatedToken, out exceptionThrown) : ValidateJWS(token, validationParameters, baseConfiguration, out signatureValidatedToken, out exceptionThrown));
+        if (validationParameters.ConfigurationManager != null)
+        {
+            if (claimsPrincipal != null)
+            {
+                if (baseConfiguration != null)
+                {
+                    validationParameters.ConfigurationManager.LastKnownGoodConfiguration = baseConfiguration;
+                }
+
+                return claimsPrincipal;
+            }
+
+            if (TokenUtilities.IsRecoverableException(exceptionThrown.SourceException))
+            {
+                if (baseConfiguration != null)
+                {
+                    validationParameters.ConfigurationManager.RequestRefresh();
+                    validationParameters.RefreshBeforeValidation = true;
+                    BaseConfiguration baseConfiguration2 = baseConfiguration;
+                    baseConfiguration = validationParameters.ConfigurationManager.GetBaseConfigurationAsync(CancellationToken.None).GetAwaiter().GetResult();
+                    if (baseConfiguration2 != baseConfiguration)
+                    {
+                        claimsPrincipal = ((outerToken != null) ? ValidateJWE(token, outerToken, validationParameters, baseConfiguration, out signatureValidatedToken, out exceptionThrown) : ValidateJWS(token, validationParameters, baseConfiguration, out signatureValidatedToken, out exceptionThrown));
+                        if (claimsPrincipal != null)
+                        {
+                            validationParameters.ConfigurationManager.LastKnownGoodConfiguration = baseConfiguration;
+                            return claimsPrincipal;
+                        }
+                    }
+                }
+
+                if (validationParameters.ConfigurationManager.UseLastKnownGoodConfiguration)
+                {
+                    validationParameters.RefreshBeforeValidation = false;
+                    validationParameters.ValidateWithLKG = true;
+                    Exception sourceException = exceptionThrown.SourceException;
+                    string kid = ((outerToken != null) ? outerToken.Header.Kid : (ValidateSignatureUsingDelegates(token, validationParameters, null) ?? GetJwtSecurityTokenFromToken(token, validationParameters)).Header.Kid);
+                    BaseConfiguration[] validLkgConfigurations = validationParameters.ConfigurationManager.GetValidLkgConfigurations();
+                    foreach (BaseConfiguration baseConfiguration3 in validLkgConfigurations)
+                    {
+                        if (!baseConfiguration3.Equals(baseConfiguration) && TokenUtilities.IsRecoverableConfiguration(kid, baseConfiguration, baseConfiguration3, sourceException))
+                        {
+                            claimsPrincipal = ((outerToken != null) ? ValidateJWE(token, outerToken, validationParameters, baseConfiguration3, out signatureValidatedToken, out exceptionThrown) : ValidateJWS(token, validationParameters, baseConfiguration3, out signatureValidatedToken, out exceptionThrown));
+                            if (claimsPrincipal != null)
+                            {
+                                return claimsPrincipal;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (claimsPrincipal != null)
+        {
+            return claimsPrincipal;
+        }
+
+        exceptionThrown.Throw();
+        return null;
+    }
+
+    // ...
+
+    private static JwtSecurityToken ValidateSignatureUsingDelegates(string token, TokenValidationParameters validationParameters, BaseConfiguration configuration);
+
+    private JwtSecurityToken ValidateSignatureAndIssuerSecurityKey(string token, JwtSecurityToken jwtToken, TokenValidationParameters validationParameters, BaseConfiguration configuration);
+
+    private JwtSecurityToken GetJwtSecurityTokenFromToken(string token, TokenValidationParameters validationParameters);
+
+    protected ClaimsPrincipal ValidateTokenPayload(JwtSecurityToken jwtToken, TokenValidationParameters validationParameters)
+    {
+        return ValidateTokenPayload(jwtToken, validationParameters, null);
+    }
+
+    private ClaimsPrincipal ValidateTokenPayload(JwtSecurityToken jwtToken, TokenValidationParameters validationParameters, BaseConfiguration configuration)
+    {
+        DateTime? expires = ((!jwtToken.Payload.Expiration.HasValue) ? null : new DateTime?(jwtToken.ValidTo));
+        DateTime? notBefore = ((!jwtToken.Payload.NotBefore.HasValue) ? null : new DateTime?(jwtToken.ValidFrom));
+        ValidateLifetime(notBefore, expires, jwtToken, validationParameters);
+        ValidateAudience(jwtToken.Audiences, jwtToken, validationParameters);
+        string issuer = ((configuration == null) ? ValidateIssuer(jwtToken.Issuer, jwtToken, validationParameters) : Validators.ValidateIssuer(jwtToken.Issuer, jwtToken, validationParameters, configuration));
+        ValidateTokenReplay(expires, jwtToken.RawData, validationParameters);
+        if (validationParameters.ValidateActor && !string.IsNullOrWhiteSpace(jwtToken.Actor))
+        {
+            ValidateToken(jwtToken.Actor, validationParameters.ActorValidationParameters ?? validationParameters, out var _);
+        }
+
+        Validators.ValidateTokenType(jwtToken.Header.Typ, jwtToken, validationParameters);
+        ClaimsIdentity claimsIdentity = CreateClaimsIdentity(jwtToken, issuer, validationParameters);
+        if (validationParameters.SaveSigninToken)
+        {
+            claimsIdentity.BootstrapContext = jwtToken.RawData;
+        }
+
+        return new ClaimsPrincipal(claimsIdentity);
+    }
+
+    private ClaimsPrincipal CreateClaimsPrincipalFromToken(JwtSecurityToken jwtToken, string issuer, TokenValidationParameters validationParameters)
+    {
+        ClaimsIdentity claimsIdentity = CreateClaimsIdentity(jwtToken, issuer, validationParameters);
+        if (validationParameters.SaveSigninToken)
+        {
+            claimsIdentity.BootstrapContext = jwtToken.RawData;
+        }
+
+        if (LogHelper.IsEnabled(EventLogLevel.Informational))
+        {
+            LogHelper.LogInformation("IDX10241: Security token validated. token: '{0}'.", jwtToken);
+        }
+
+        return new ClaimsPrincipal(claimsIdentity);
+    }
+
+    public override string WriteToken(SecurityToken token);
+
+    protected virtual JwtSecurityToken ValidateSignature(string token, TokenValidationParameters validationParameters)
+    {
+        JwtSecurityToken jwtSecurityToken = ValidateSignatureUsingDelegates(token, validationParameters, null);
+        JwtSecurityToken jwtSecurityTokenFromToken = GetJwtSecurityTokenFromToken(token, validationParameters);
+        return ValidateSignature(token, jwtSecurityToken ?? jwtSecurityTokenFromToken, validationParameters, null);
+    }
+
+    private JwtSecurityToken ValidateSignature(string token, JwtSecurityToken jwtToken, TokenValidationParameters validationParameters, BaseConfiguration configuration);
+
+    private static IEnumerable<SecurityKey> GetAllDecryptionKeys(TokenValidationParameters validationParameters)
+    {
+        if (validationParameters.TokenDecryptionKey != null)
+            yield return validationParameters.TokenDecryptionKey;
+
+        if (validationParameters.TokenDecryptionKeys == null)
+            yield break;
+
+        foreach (SecurityKey tokenDecryptionKey in validationParameters.TokenDecryptionKeys)
+            yield return tokenDecryptionKey;
+    }
+
+    protected virtual ClaimsIdentity CreateClaimsIdentity(JwtSecurityToken jwtToken, string issuer, TokenValidationParameters validationParameters)
+    {
+        if (jwtToken == null)
+        {
+            throw LogHelper.LogArgumentNullException("jwtToken");
+        }
+
+        if (validationParameters == null)
+        {
+            throw LogHelper.LogArgumentNullException("validationParameters");
+        }
+
+        string actualIssuer = issuer;
+        if (string.IsNullOrWhiteSpace(issuer))
+        {
+            if (LogHelper.IsEnabled(EventLogLevel.Verbose))
+            {
+                LogHelper.LogVerbose("IDX10244: Issuer is null or empty. Using runtime default for creating claims '{0}'.", LogHelper.MarkAsNonPII("LOCAL AUTHORITY"));
+            }
+
+            actualIssuer = "LOCAL AUTHORITY";
+        }
+
+        if (!MapInboundClaims)
+        {
+            return CreateClaimsIdentityWithoutMapping(jwtToken, actualIssuer, validationParameters);
+        }
+
+        return CreateClaimsIdentityWithMapping(jwtToken, actualIssuer, validationParameters);
+    }
+
+    private ClaimsIdentity CreateClaimsIdentityWithMapping(JwtSecurityToken jwtToken, string actualIssuer, TokenValidationParameters validationParameters)
+    {
+        ClaimsIdentity claimsIdentity = validationParameters.CreateClaimsIdentity(jwtToken, actualIssuer);
+        foreach (Claim claim in jwtToken.Claims)
+        {
+            if (_inboundClaimFilter.Contains(claim.Type))
+            {
+                continue;
+            }
+
+            bool flag = true;
+            if (!_inboundClaimTypeMap.TryGetValue(claim.Type, out var value))
+            {
+                value = claim.Type;
+                flag = false;
+            }
+
+            if (value == "http://schemas.xmlsoap.org/ws/2009/09/identity/claims/actor")
+            {
+                if (claimsIdentity.Actor != null)
+                {
+                    throw LogHelper.LogExceptionMessage(new InvalidOperationException(LogHelper.FormatInvariant("IDX12710: Only a single 'Actor' is supported. Found second claim of type: '{0}', value: '{1}'", LogHelper.MarkAsNonPII("actort"), LogHelper.MarkAsSecurityArtifact(claim.Value, JwtTokenUtilities.SafeLogJwtToken))));
+                }
+
+                if (CanReadToken(claim.Value))
+                {
+                    JwtSecurityToken jwtToken2 = ReadToken(claim.Value) as JwtSecurityToken;
+                    claimsIdentity.Actor = CreateClaimsIdentity(jwtToken2, actualIssuer, validationParameters);
+                }
+            }
+
+            Claim claim = new Claim(value, claim.Value, claim.ValueType, actualIssuer, actualIssuer, claimsIdentity);
+            if (claim.Properties.Count > 0)
+            {
+                foreach (KeyValuePair<string, string> property in claim.Properties)
+                {
+                    claim.Properties[property.Key] = property.Value;
+                }
+            }
+
+            if (flag)
+            {
+                claim.Properties[ShortClaimTypeProperty] = claim2.Type;
+            }
+
+            claimsIdentity.AddClaim(claim);
+        }
+
+        return claimsIdentity;
+    }
+
+    private ClaimsIdentity CreateClaimsIdentityWithoutMapping(JwtSecurityToken jwtToken, string actualIssuer, TokenValidationParameters validationParameters)
+    {
+        ClaimsIdentity claimsIdentity = validationParameters.CreateClaimsIdentity(jwtToken, actualIssuer);
+        foreach (Claim claim2 in jwtToken.Claims)
+        {
+            if (_inboundClaimFilter.Contains(claim2.Type))
+            {
+                continue;
+            }
+
+            string type = claim2.Type;
+            if (type == "http://schemas.xmlsoap.org/ws/2009/09/identity/claims/actor")
+            {
+                if (claimsIdentity.Actor != null)
+                {
+                    throw LogHelper.LogExceptionMessage(new InvalidOperationException(LogHelper.FormatInvariant("IDX12710: Only a single 'Actor' is supported. Found second claim of type: '{0}', value: '{1}'", LogHelper.MarkAsNonPII("actort"), LogHelper.MarkAsSecurityArtifact(claim2.Value, JwtTokenUtilities.SafeLogJwtToken))));
+                }
+
+                if (CanReadToken(claim2.Value))
+                {
+                    JwtSecurityToken jwtToken2 = ReadToken(claim2.Value) as JwtSecurityToken;
+                    claimsIdentity.Actor = CreateClaimsIdentity(jwtToken2, actualIssuer, validationParameters);
+                }
+            }
+
+            Claim claim = new Claim(type, claim2.Value, claim2.ValueType, actualIssuer, actualIssuer, claimsIdentity);
+            if (claim2.Properties.Count > 0)
+            {
+                foreach (KeyValuePair<string, string> property in claim2.Properties)
+                {
+                    claim.Properties[property.Key] = property.Value;
+                }
+            }
+
+            claimsIdentity.AddClaim(claim);
+        }
+
+        return claimsIdentity;
+    }
+
+    protected virtual string CreateActorValue(ClaimsIdentity actor);
+
+    protected virtual void ValidateAudience(IEnumerable<string> audiences, JwtSecurityToken jwtToken, TokenValidationParameters validationParameters)
+    {
+        Validators.ValidateAudience(audiences, jwtToken, validationParameters);
+    }
+
+    protected virtual void ValidateLifetime(DateTime? notBefore, DateTime? expires, JwtSecurityToken jwtToken, TokenValidationParameters validationParameters)
+    {
+        Validators.ValidateLifetime(notBefore, expires, jwtToken, validationParameters);
+    }
+
+    protected virtual string ValidateIssuer(string issuer, JwtSecurityToken jwtToken, TokenValidationParameters validationParameters)
+    {
+        return Validators.ValidateIssuer(issuer, jwtToken, validationParameters);
+    }
+
+    protected virtual void ValidateTokenReplay(DateTime? expires, string securityToken, TokenValidationParameters validationParameters)
+    {
+        Validators.ValidateTokenReplay(expires, securityToken, validationParameters);
+    }
+
+    protected virtual SecurityKey ResolveIssuerSigningKey(string token, JwtSecurityToken jwtToken, TokenValidationParameters validationParameters)
+    {
+        return JwtTokenUtilities.ResolveTokenSigningKey(jwtToken.Header.Kid, jwtToken.Header.X5t, validationParameters, null);
+    }
+
+    protected virtual SecurityKey ResolveTokenDecryptionKey(string token, JwtSecurityToken jwtToken, TokenValidationParameters validationParameters);
+    protected string DecryptToken(JwtSecurityToken jwtToken, TokenValidationParameters validationParameters);
+
+    internal IEnumerable<SecurityKey> GetContentEncryptionKeys(JwtSecurityToken jwtToken, TokenValidationParameters validationParameters);
+
+    private static byte[] GetSymmetricSecurityKey(SecurityKey key)
+    {
+        if (key is SymmetricSecurityKey symmetricSecurityKey)
+        {
+            return symmetricSecurityKey.Key;
+        }
+
+        if (key is JsonWebKey jsonWebKey && jsonWebKey.K != null)
+        {
+            return Base64UrlEncoder.DecodeBytes(jsonWebKey.K);
+        }
+
+        return null;
+    }
+
+    protected virtual void ValidateIssuerSecurityKey(SecurityKey key, JwtSecurityToken securityToken, TokenValidationParameters validationParameters)
+    {
+        Validators.ValidateIssuerSecurityKey(key, securityToken, validationParameters);
+    }
+
+    public override void WriteToken(XmlWriter writer, SecurityToken token)
+    {
+        throw new NotImplementedException();
+    }
+
+    public override Task<TokenValidationResult> ValidateTokenAsync(string token, TokenValidationParameters validationParameters)
+    {
+        try
+        {
+            SecurityToken validatedToken;
+            ClaimsPrincipal claimsPrincipal = ValidateToken(token, validationParameters, out validatedToken);
+            return Task.FromResult(new TokenValidationResult
+            {
+                SecurityToken = validatedToken,
+                ClaimsIdentity = (claimsPrincipal?.Identity as ClaimsIdentity),
+                IsValid = true
+            });
+        }
+        catch (Exception exception)
+        {
+            return Task.FromResult(new TokenValidationResult
+            {
+                IsValid = false,
+                Exception = exception
+            });
+        }
+    }
+}
+//----------------------------------Ʌ
 ```
 
 ```C#
