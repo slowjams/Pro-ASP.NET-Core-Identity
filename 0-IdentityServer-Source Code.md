@@ -1721,7 +1721,7 @@ public class DefaultTokenService : ITokenService
         var token = new Token(OidcConstants.TokenTypes.IdentityToken)
         {
             CreationTime = Clock.UtcNow.UtcDateTime,
-            Audiences = { request.ValidatedRequest.Client.ClientId },
+            Audiences = { request.ValidatedRequest.Client.ClientId },  // <---------------------
             Issuer = issuer,
             Lifetime = request.ValidatedRequest.Client.IdentityTokenLifetime,
             Claims = claims.Distinct(new ClaimComparer()).ToList(),
@@ -1770,14 +1770,14 @@ public class DefaultTokenService : ITokenService
         };
  
         // add aud based on ApiResources in the validated request
-        foreach (var aud in request.ValidatedResources.Resources.ApiResources.Select(x => x.Name).Distinct())
+        foreach (var aud in request.ValidatedResources.Resources.ApiResources.Select(x => x.Name).Distinct())  // <-----------------------idpaud
         {
-            token.Audiences.Add(aud);
+            token.Audiences.Add(aud);  //  add "imagegalleryapi" as aud
         }
  
         if (Options.EmitStaticAudienceClaim)
         {
-            token.Audiences.Add(string.Format(IdentityServerConstants.AccessTokenAudience, issuer.EnsureTrailingSlash()));
+            token.Audiences.Add(string.Format(IdentityServerConstants.AccessTokenAudience, issuer.EnsureTrailingSlash()));  // add "https://localhost:5001/resources" as aud
         }
  
         // add cnf if present
@@ -2776,10 +2776,23 @@ public class UserInfoResponseGenerator : IUserInfoResponseGenerator
         
         Logger.LogDebug("Creating userinfo response");
 
-        // extract scopes and turn into requested claim types
-        var scopes = validationResult.TokenValidationResult.Claims.Where(c => c.Type == JwtClaimTypes.Scope).Select(c => c.Value);
+        // this includes the scopes users choose in the consent page
+        var scopes = validationResult.TokenValidationResult.Claims.Where(c => c.Type == JwtClaimTypes.Scope).Select(c => c.Value);  // <-------------------
+        /*  scopes contains:
+            "openid",
+            "profile",
+            "imagegalleryapi.fullaccess",
+            "other.fullaccess",
+            "roles"
+        */
 
-        var validatedResources = await GetRequestedResourcesAsync(scopes);
+        var validatedResources = await GetRequestedResourcesAsync(scopes);  // calls Resources.FindEnabledIdentityResourcesByScopeAsync(scopes)
+        /*  validatedResources contains                                     // so ApiResources are filtered out
+           "openid",
+           "profile",
+            "roles"
+        */
+
         var requestedClaimTypes = await GetRequestedClaimTypesAsync(validatedResources);  // <---------------------u1.5
         /* requestedClaimTypes contains
            "sub", "name", "given_name", "family_name", "profile", "role" and so on
@@ -3455,6 +3468,29 @@ public class TestUserProfileService : IProfileService
     }
 }
 //---------------------------------Ʌ
+
+//-----------------------------------------------------V
+public static class ProfileDataRequestContextExtensions
+{
+    public static List<Claim> FilterClaims(this ProfileDataRequestContext context, IEnumerable<Claim> claims)
+    {
+        if (context == null) throw new ArgumentNullException(nameof(context));
+        if (claims == null) throw new ArgumentNullException(nameof(claims));
+
+        return claims.Where(x => context.RequestedClaimTypes.Contains(x.Type)).ToList();
+    }
+
+    public static void AddRequestedClaims(this ProfileDataRequestContext context, IEnumerable<Claim> claims)
+    {
+        if (context.RequestedClaimTypes.Any())
+        {
+            context.IssuedClaims.AddRange(context.FilterClaims(claims));
+        }
+    }
+    
+    // ...
+}
+//-----------------------------------------------------Ʌ
 
 //-----------------------------V
 public class IdentityServerUser

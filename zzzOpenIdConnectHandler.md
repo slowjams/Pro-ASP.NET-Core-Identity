@@ -52,7 +52,7 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
     private readonly JwtSecurityTokenHandler _defaultHandler = new JwtSecurityTokenHandler();
     private readonly JsonWebTokenHandler _defaultTokenHandler = new JsonWebTokenHandler
     {
-        MapInboundClaims = JwtSecurityTokenHandler.DefaultMapInboundClaims
+        MapInboundClaims = JwtSecurityTokenHandler.DefaultMapInboundClaims  // <----------------------------jcm
     };
     private bool _mapInboundClaims = JwtSecurityTokenHandler.DefaultMapInboundClaims;
 
@@ -126,7 +126,8 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
         RemoteSignOutPath = new PathString("/signout-oidc");
         SecurityTokenValidator = _defaultHandler;
         Events = new OpenIdConnectEvents();
-        Scope.Add("openid"); Scope.Add("profile");
+        Scope.Add("openid"); 
+        Scope.Add("profile");
         ClaimActions.DeleteClaim("nonce"); 
         ClaimActions.DeleteClaim("aud"); // <------------------------------------------------oica
         ClaimActions.DeleteClaim("azp"); 
@@ -793,7 +794,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             ClaimsPrincipal user = null;
             JwtSecurityToken jwt = null;
             string nonce2 = null;
-            TokenValidationParameters validationParameters = base.Options.TokenValidationParameters.Clone();
+            TokenValidationParameters validationParameters = base.Options.TokenValidationParameters.Clone();  // <-----------------cci
             if (!string.IsNullOrEmpty(authorizationResponse.IdToken))
             {
                 base.Logger.ReceivedIdToken();
@@ -842,10 +843,10 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 // If the developer redeemed the code themselves...
                 tokenEndpointResponse = authorizationCodeReceivedContext.TokenEndpointResponse;
                 jwt = authorizationCodeReceivedContext.JwtSecurityToken!;
-
+                                                                                                        // <-------------------------note the there is no id token here
                 if (!authorizationCodeReceivedContext.HandledCodeRedemption)
                 {
-                    tokenEndpointResponse = await RedeemAuthorizationCodeAsync(tokenEndpointRequest!);  // <-------------------------o3.2
+                    tokenEndpointResponse = await RedeemAuthorizationCodeAsync(tokenEndpointRequest!);  // <---------------o3.2, id token and access token will be generated together by idp 
                 }
 
                 var tokenResponseReceivedContext = await RunTokenResponseReceivedEventAsync(authorizationResponse, tokenEndpointResponse!, user, properties);
@@ -871,8 +872,9 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 if (!Options.UseSecurityTokenValidator)
                 {
                     var tokenValidationResult = 
-                        await ValidateTokenUsingHandlerAsync(tokenEndpointResponse.IdToken, properties, validationParameters);   // <---------!!!!!!use IdToken to create ClaimIdentity
-                    
+                        await ValidateTokenUsingHandlerAsync(tokenEndpointResponse.IdToken, properties, validationParameters);   // <------!!!!!! o4.0 use IdToken to create ClaimIdentity
+                        // note that TokenValidationParameters validationParameters will be used to create ClaimsIdentity, which can affect ClaimsIdentity.RoleClaimType check cci flag
+
                     tokenEndpointUser = new ClaimsPrincipal(tokenValidationResult.ClaimsIdentity);   // <----------------------------------------o4.0
                     
                     tokenEndpointJwt = JwtSecurityTokenConverter.Convert(tokenValidationResult.SecurityToken as JsonWebToken);
@@ -939,8 +941,8 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             }
             else
             {
-                using (var payload = JsonDocument.Parse("{}"))
-                {
+                using (var payload = JsonDocument.Parse("{}")) // <----------mjku, use a dymmy {} as root doc since client doesn't call idp userinfo, but still need to run ClaimActions
+                {                                              // options.ClaimActions.MapJsonKey("role", "role") doesn't really do anthing here
                     var identity = (ClaimsIdentity)user!.Identity!;
                     foreach (var action in Options.ClaimActions)  // <-----------------------mjk
                     {
@@ -968,6 +970,41 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
 
             return HandleRequestResult.Fail(exception, properties);
         }
+    }
+
+    private async Task<TokenValidationResult> ValidateTokenUsingHandlerAsync(string idToken, AuthenticationProperties properties, TokenValidationParameters validationParameters)
+    {
+        if (Options.ConfigurationManager is BaseConfigurationManager baseConfigurationManager)
+        {
+            validationParameters.ConfigurationManager = baseConfigurationManager;
+        }
+        else if (_configuration != null)
+        {
+            var issuer = new[] { _configuration.Issuer };
+            validationParameters.ValidIssuers = validationParameters.ValidIssuers?.Concat(issuer) ?? issuer;
+
+            validationParameters.IssuerSigningKeys = validationParameters.IssuerSigningKeys?.Concat(_configuration.SigningKeys)
+                ?? _configuration.SigningKeys;
+        }
+
+        var validationResult = await Options.TokenHandler.ValidateTokenAsync(idToken, validationParameters);  // <----------------------------------------o4.0
+   
+        if (Options.UseTokenLifetime)
+        {
+            var issued = validatedToken.ValidFrom;
+            if (issued != DateTime.MinValue)
+            {
+                properties.IssuedUtc = issued;
+            }
+
+            var expires = validatedToken.ValidTo;
+            if (expires != DateTime.MinValue)
+            {
+                properties.ExpiresUtc = expires;
+            }
+        }
+
+        return validationResult;
     }
 
     private AuthenticationProperties ReadPropertiesAndClearState(OpenIdConnectMessage message)
@@ -1081,80 +1118,82 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         */
     }
 
-    protected virtual async Task<HandleRequestResult> GetUserInformationAsync(   // <----------------------------------------o4.4
-        OpenIdConnectMessage message, 
-        JwtSecurityToken jwt, 
-        ClaimsPrincipal principal,
-         AuthenticationProperties properties)
+    protected virtual async Task<HandleRequestResult> GetUserInformationAsync(  // <----------------------------------------o4.4
+        OpenIdConnectMessage message, JwtSecurityToken jwt,
+        ClaimsPrincipal principal, AuthenticationProperties properties)
     {
-        string text = _configuration?.UserInfoEndpoint;   // <-------------------o4.5 https://localhost:5001/connect/userinfo
-        if (string.IsNullOrEmpty(text))
-        {
-            base.Logger.UserInfoEndpointNotSet();
-            return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, base.Scheme.Name));
-        }
+        var userInfoEndpoint = _configuration?.UserInfoEndpoint;   // <-------------------o4.5 https://localhost:5001/connect/userinfo
 
+        if (string.IsNullOrEmpty(userInfoEndpoint))
+        {
+            Logger.UserInfoEndpointNotSet();
+            return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, Scheme.Name));
+        }
         if (string.IsNullOrEmpty(message.AccessToken))
         {
-            base.Logger.AccessTokenNotAvailable();
-            return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, base.Scheme.Name));
+            Logger.AccessTokenNotAvailable();
+            return HandleRequestResult.Success(new AuthenticationTicket(principal, properties, Scheme.Name));
         }
-
-        base.Logger.RetrievingClaims();
-        HttpRequestMessage httpRequestMessage = new HttpRequestMessage(HttpMethod.Get, text);
-        httpRequestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", message.AccessToken);
-        httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
-
-        HttpResponseMessage responseMessage =  
-            await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <-------------------o4.6 call IDP on https://localhost:5001/connect/userinfo
-                                                                                           // note that we need AccessToken for the UserInfoEndpoint in IDP
+        Logger.RetrievingClaims();
+        
+        var requestMessage = new HttpRequestMessage(HttpMethod.Get, userInfoEndpoint);
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", message.AccessToken);
+        requestMessage.Version = Backchannel.DefaultRequestVersion;
+        
+        var responseMessage = await Backchannel.SendAsync(requestMessage, Context.RequestAborted);  // <-------------------o4.6 call IDP on https://localhost:5001/connect/userinfo
+                                                                                                    // note that we need AccessToken for the UserInfoEndpoint in IDP
         responseMessage.EnsureSuccessStatusCode();
+        var userInfoResponse = await responseMessage.Content.ReadAsStringAsync(Context.RequestAborted);
 
-        string userInfoResponse = await responseMessage.Content.ReadAsStringAsync(base.Context.RequestAborted);
-        MediaTypeHeaderValue contentType = responseMessage.Content.Headers.ContentType;
-        JsonDocument jsonDocument;
-        if ((contentType?.MediaType?.Equals("application/json", StringComparison.OrdinalIgnoreCase)).GetValueOrDefault())
+        JsonDocument user;
+        var contentType = responseMessage.Content.Headers.ContentType;
+        if (contentType?.MediaType?.Equals("application/json", StringComparison.OrdinalIgnoreCase) ?? false)
         {
-            jsonDocument = JsonDocument.Parse(userInfoResponse);
+            user = JsonDocument.Parse(userInfoResponse);
+        }
+        else if (contentType?.MediaType?.Equals("application/jwt", StringComparison.OrdinalIgnoreCase) ?? false)
+        {
+            var userInfoEndpointJwt = new JwtSecurityToken(userInfoResponse);
+            user = JsonDocument.Parse(userInfoEndpointJwt.Payload.SerializeToJson());
         }
         else
         {
-            if (!(contentType?.MediaType?.Equals("application/jwt", StringComparison.OrdinalIgnoreCase)).GetValueOrDefault())
-            {
-                return HandleRequestResult.Fail("Unknown response type: " + contentType?.MediaType, properties);
-            }
-
-            jsonDocument = JsonDocument.Parse(new JwtSecurityToken(userInfoResponse).Payload.SerializeToJson());
+            return HandleRequestResult.Fail("Unknown response type: " + contentType?.MediaType, properties);
         }
 
-        using (jsonDocument)
+        using (user)  // user is JsonDocument and it contains "role" claim from userinfo endpoint
         {
-            UserInformationReceivedContext userInformationReceivedContext = await RunUserInformationReceivedEventAsync(principal, properties, message, jsonDocument);
+            var userInformationReceivedContext = await RunUserInformationReceivedEventAsync(principal, properties, message, user);
             if (userInformationReceivedContext.Result != null)
             {
                 return userInformationReceivedContext.Result;
             }
+            principal = userInformationReceivedContext.Principal!;
+            properties = userInformationReceivedContext.Properties!;
+            using (var updatedUser = userInformationReceivedContext.User)  // updatedUser is  "{"role":"PayingUser","given_name":"Emma","family_name":"Flagg","sub":"b7539694-xxx"}"
+            {
+                Options.ProtocolValidator.ValidateUserInfoResponse(new OpenIdConnectProtocolValidationContext()
+                {
+                    UserInfoEndpointResponse = userInfoResponse,
+                    ValidatedIdToken = jwt,
+                });
 
-            principal = userInformationReceivedContext.Principal;
-            properties = userInformationReceivedContext.Properties;
-            using JsonDocument jsonDocument2 = userInformationReceivedContext.User;
-            base.Options.ProtocolValidator.ValidateUserInfoResponse(new OpenIdConnectProtocolValidationContext
-            {
-                UserInfoEndpointResponse = userInfoResponse,
-                ValidatedIdToken = jwt
-            });
-            ClaimsIdentity identity = (ClaimsIdentity)principal.Identity;
-            foreach (ClaimAction claimAction in base.Options.ClaimActions)
-            {
-                claimAction.Run(jsonDocument2.RootElement, identity, ClaimsIssuer);
+                var identity = (ClaimsIdentity)principal.Identity!;  // <--------------------jcm, mjk,  this identity still only contains claims generated from id token, and we want to 
+                                                                     // add more claims from the rsponse (JsonDocument) of userinfo endpoint in idp, that's why we need to call
+                                                                     // `options.ClaimActions.MapJsonKey("role", "role")` to add those extra claims
+                
+                foreach (var action in Options.ClaimActions)         //  to accomodate `options.ClaimActions.DeleteClaim("idp")` etc in OpenIdConnectOptions
+                {
+                    action.Run(updatedUser.RootElement, identity, ClaimsIssuer);
+                }
             }
         }
 
-        return HandleRequestResult.Success(
+         return HandleRequestResult.Success(
             new AuthenticationTicket(principal, properties, base.Scheme.Name)  // <-----------------o4.7 now you see why user-client cookie contains name = Emma claim, while id token 
         );                                                                     // still doesn't have name = Emma, because we call UserInfoEndpoint to get more claims  and it is not
     }                                                                          // a good practice to contains user info, the url will be lengthy, some old browser might not support it
-
+    
     private void SaveTokens(AuthenticationProperties properties, OpenIdConnectMessage message)  
     {
         List<AuthenticationToken> list = new List<AuthenticationToken>();
@@ -1493,7 +1532,7 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
         AuthenticationProperties? properties = null;
         try
         {
-            var authResult = await HandleRemoteAuthenticateAsync();  // <----------------------------o2.2.
+            var authResult = await HandleRemoteAuthenticateAsync();  // <----------------------------o2.2., o4.9
             if (authResult == null)
             {
                 exception = new InvalidOperationException("Invalid return state, unable to redirect.");
@@ -1749,6 +1788,194 @@ public abstract class TokenHandler
 }
 //--------------------------------Ʌ
 
+//--------------------------------------------V
+public partial class TokenValidationParameters
+{
+    private string _authenticationType;
+    private TimeSpan _clockSkew = DefaultClockSkew;
+    private string _nameClaimType = ClaimsIdentity.DefaultNameClaimType;   // http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name
+    private string _roleClaimType = ClaimsIdentity.DefaultRoleClaimType;   // http://schemas.microsoft.com/ws/2008/06/identity/claims/role
+    private Dictionary<string, object> _instancePropertyBag;
+
+    public static readonly string DefaultAuthenticationType = "AuthenticationTypes.Federation"; // Note: The change was because 5.x removed the dependency on System.IdentityModel and we 
+    public static readonly TimeSpan DefaultClockSkew = TimeSpan.FromSeconds(300); // 5 min.
+    public const int DefaultMaximumTokenSizeInBytes = 1024 * 250;
+
+    protected TokenValidationParameters(TokenValidationParameters other)
+    {
+        // ...
+    }
+
+    public TokenValidationParameters()
+    {
+        LogTokenId = true;
+        LogValidationExceptions = true;
+        RequireExpirationTime = true;
+        RequireSignedTokens = true;
+        RequireAudience = true;
+        SaveSigninToken = false;
+        TryAllIssuerSigningKeys = true;
+        ValidateActor = false;
+        ValidateAudience = true;
+        ValidateIssuer = true;
+        ValidateIssuerSigningKey = false;
+        ValidateLifetime = true;
+        ValidateTokenReplay = false;
+    }
+
+    public TokenValidationParameters ActorValidationParameters { get; set; }
+    public AlgorithmValidator AlgorithmValidator { get; set; }
+
+    public AudienceValidator AudienceValidator { get; set; }
+
+    public string AuthenticationType { get; set; }  // on _authenticationType
+
+    [DefaultValue(300)]
+    public TimeSpan ClockSkew
+    {
+        get
+        {
+            return _clockSkew;
+        }
+
+        set
+        {
+            if (value < TimeSpan.Zero)
+                throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(value), LogHelper.FormatInvariant(LogMessages.IDX10100, LogHelper.MarkAsNonPII(value))));
+
+            _clockSkew = value;
+        }
+    }
+
+    public virtual TokenValidationParameters Clone()
+    {
+        return new(this)
+        {
+            IsClone = true
+        };
+    }
+
+    public virtual ClaimsIdentity CreateClaimsIdentity(SecurityToken securityToken, string issuer)  // <--------------------------jcm, cci
+    {
+        string nameClaimType = null;
+        if (NameClaimTypeRetriever != null)
+        {
+            nameClaimType = NameClaimTypeRetriever(securityToken, issuer);
+        }
+        else
+        {
+            nameClaimType = NameClaimType;
+        }
+
+        string roleClaimType = null;
+        if (RoleClaimTypeRetriever != null)
+        {
+            roleClaimType = RoleClaimTypeRetriever(securityToken, issuer);
+        }
+        else
+        {
+            roleClaimType = RoleClaimType;
+        }
+
+        if (LogHelper.IsEnabled(EventLogLevel.Informational))
+            LogHelper.LogInformation(LogMessages.IDX10245, securityToken);
+
+        return ClaimsIdentityFactory.Create(authenticationType: AuthenticationType ?? DefaultAuthenticationType, nameType: nameClaimType ?? ClaimsIdentity.DefaultNameClaimType, roleType: roleClaimType ?? ClaimsIdentity.DefaultRoleClaimType, securityToken);
+    }
+
+    public BaseConfigurationManager ConfigurationManager { get; set; }
+
+    public CryptoProviderFactory CryptoProviderFactory { get; set; }
+
+    [DefaultValue(true)]
+    public bool IgnoreTrailingSlashWhenValidatingAudience { get; set; } = true;
+    public bool IncludeTokenOnFailedValidation { get; set; }
+    public IssuerSigningKeyValidator IssuerSigningKeyValidator { get; set; }
+    public IssuerSigningKeyValidatorUsingConfiguration IssuerSigningKeyValidatorUsingConfiguration { get; set; }
+
+    public IDictionary<string, object> InstancePropertyBag => _instancePropertyBag ??= new Dictionary<string, object>();
+
+    public bool IsClone { get; protected set; }
+    public SecurityKey IssuerSigningKey { get; set; }
+    public IssuerSigningKeyResolver IssuerSigningKeyResolver { get; set; }
+    public IssuerSigningKeyResolverUsingConfiguration IssuerSigningKeyResolverUsingConfiguration { get; set; }
+    public IEnumerable<SecurityKey> IssuerSigningKeys { get; set; }
+
+    public IssuerValidator IssuerValidator { get; set; }
+    internal IssuerValidatorAsync IssuerValidatorAsync { get; set; }
+    public IssuerValidatorUsingConfiguration IssuerValidatorUsingConfiguration { get; set; }
+
+    public TransformBeforeSignatureValidation TransformBeforeSignatureValidation { get; set; }
+
+    public LifetimeValidator LifetimeValidator { get; set; }
+
+    [DefaultValue(true)]
+    public bool LogTokenId { get; set; }
+
+    [DefaultValue(true)]
+    public bool LogValidationExceptions { get; set; }
+
+    public string NameClaimType { get; set; }  // on _nameClaimType
+   
+    public Func<SecurityToken, string, string> NameClaimTypeRetriever { get; set; }
+
+    public IDictionary<string, object> PropertyBag { get; set; }
+
+    public bool RefreshBeforeValidation { get; set; }
+
+    [DefaultValue(true)]
+    public bool RequireAudience { get; set; }
+
+    [DefaultValue(true)]
+    public bool RequireExpirationTime { get; set; }
+
+    [DefaultValue(true)]
+    public bool RequireSignedTokens { get; set; }
+
+    public string RoleClaimType
+    {
+        get {
+            return _roleClaimType;
+        }
+
+        set {      
+            _roleClaimType = value;
+        }
+    }
+
+    public Func<SecurityToken, string, string> RoleClaimTypeRetriever { get; set; }
+    public bool SaveSigninToken { get; set; }
+    public SignatureValidator SignatureValidator { get; set; }
+    public SignatureValidatorUsingConfiguration SignatureValidatorUsingConfiguration { get; set; }
+    public SecurityKey TokenDecryptionKey { get; set; }
+    public TokenDecryptionKeyResolver TokenDecryptionKeyResolver { get; set; }
+    public IEnumerable<SecurityKey> TokenDecryptionKeys { get; set; }
+    public TokenReader TokenReader { get; set; }
+    public ITokenReplayCache TokenReplayCache { get; set; }
+    public TokenReplayValidator TokenReplayValidator { get; set; }
+    [DefaultValue(true)]
+    public bool TryAllIssuerSigningKeys { get; set; }
+    public TypeValidator TypeValidator { get; set; }
+    public bool ValidateActor { get; set; }
+    [DefaultValue(true)]
+    public bool ValidateAudience { get; set; }
+    [DefaultValue(true)]
+    public bool ValidateIssuer { get; set; }
+    public bool ValidateWithLKG { get; set; }
+    public bool ValidateIssuerSigningKey { get; set; }
+    [DefaultValue(true)]
+    public bool ValidateLifetime { get; set; }
+    public bool ValidateSignatureLast { get; set; }
+    public bool ValidateTokenReplay { get; set; }
+    public IEnumerable<string> ValidAlgorithms { get; set; }
+    public string ValidAudience { get; set; }
+    public IEnumerable<string> ValidAudiences { get; set; }
+    public string ValidIssuer { get; set; }
+    public IEnumerable<string> ValidIssuers { get; set; }
+    public IEnumerable<string> ValidTypes { get; set; }
+}
+//--------------------------------------------Ʌ
+
 //------------------------------------V
 internal static class ClaimTypeMapping
 {
@@ -1760,10 +1987,11 @@ internal static class ClaimTypeMapping
 
     public static ISet<string> InboundClaimFilter => inboundClaimFilter;
 
-    static ClaimTypeMapping()
+    static ClaimTypeMapping()   // <-----------------------------------------------------jcm, map claims in jwt to microsoft's "soap" alike claim type
     {
         shortToLongClaimTypeMapping = new Dictionary<string, string>
         {
+            { "amr", "http://schemas.microsoft.com/claims/authnmethodsreferences" },
             { "actort", "http://schemas.xmlsoap.org/ws/2009/09/identity/claims/actor" },
             { "birthdate", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/dateofbirth" },
             { "email", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" },
@@ -1806,7 +2034,7 @@ public class JsonWebTokenHandler : TokenHandler
     private const string _namespace = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties";
     private static string _shortClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties/ShortTypeName";
     private bool _mapInboundClaims = DefaultMapInboundClaims;
-    public static IDictionary<string, string> DefaultInboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.InboundClaimTypeMap);  // <---------
+    public static IDictionary<string, string> DefaultInboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.InboundClaimTypeMap);  // <---------jcm
     public static bool DefaultMapInboundClaims = false;
     public const string Base64UrlEncodedUnsignedJWSHeader = "eyJhbGciOiJub25lIn0";
     public Type TokenType => typeof(JsonWebToken);
@@ -1821,7 +2049,7 @@ public class JsonWebTokenHandler : TokenHandler
             _inboundClaimTypeMap = new Dictionary<string, string>();
     }
 
-    public bool MapInboundClaims  // jcm, default value is false
+    public bool MapInboundClaims  // jcm, default value is false, but it is set to true in OpenIdConnectOptions  via JwtSecurityTokenHandler.DefaultMapInboundClaims
     {
         get {
             return _mapInboundClaims;
@@ -1846,6 +2074,148 @@ public class JsonWebTokenHandler : TokenHandler
     public virtual TokenValidationResult ValidateToken(string token, TokenValidationParameters validationParameters);
     protected virtual ClaimsIdentity CreateClaimsIdentity(JsonWebToken jwtToken, TokenValidationParameters validationParameters, string issuer);
     protected virtual SecurityKey ResolveTokenDecryptionKey(string token, JsonWebToken jwtToken, TokenValidationParameters validationParameters);
+
+    public override async Task<TokenValidationResult> ValidateTokenAsync(string token, TokenValidationParameters validationParameters)  // <-------------vt0, token is access token
+    {
+        try
+        {
+            TokenValidationResult result = ReadToken(token, validationParameters);
+            if (result.IsValid)
+                return await ValidateTokenAsync(result.SecurityToken, validationParameters).ConfigureAwait(false);  // <-------------vt1
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            return new TokenValidationResult
+            {
+                Exception = ex,
+                IsValid = false
+            };
+        }
+    }
+
+    public override async Task<TokenValidationResult> ValidateTokenAsync(SecurityToken token, TokenValidationParameters validationParameters)
+    {
+        var jwt = token as JsonWebToken;
+        if (jwt == null)
+            return new TokenValidationResult { Exception = LogHelper.LogExceptionMessage(new SecurityTokenMalformedException(LogMessages.IDX14100)), IsValid = false };
+
+        try
+        {
+            return await ValidateTokenAsync(jwt, validationParameters).ConfigureAwait(false);  // <-------------vt1
+        }
+        catch (Exception ex)
+        {
+            return new TokenValidationResult
+            {
+                Exception = ex,
+                IsValid = false
+            };
+        }
+    }
+
+    private async ValueTask<TokenValidationResult> ValidateTokenAsync(JsonWebToken jsonWebToken, TokenValidationParameters validationParameters)
+    {
+        BaseConfiguration currentConfiguration = null;
+        if (validationParameters.ConfigurationManager != null)
+        {
+            currentConfiguration = await validationParameters.ConfigurationManager.GetBaseConfigurationAsync(CancellationToken.None).ConfigureAwait(false);  // <-------------vt2
+        }
+
+        TokenValidationResult tokenValidationResult = await ValidateTokenAsync(jsonWebToken, validationParameters, currentConfiguration).ConfigureAwait(false);  // <-------------vt2
+        if (validationParameters.ConfigurationManager != null)
+        {
+            if (tokenValidationResult.IsValid)
+            {
+                // Set current configuration as LKG if it exists.
+                if (currentConfiguration != null)
+                    validationParameters.ConfigurationManager.LastKnownGoodConfiguration = currentConfiguration;
+
+                return tokenValidationResult;
+            }
+            else if (TokenUtilities.IsRecoverableException(tokenValidationResult.Exception))
+            {
+                // If we were still unable to validate, attempt to refresh the configuration and validate using it
+                // but ONLY if the currentConfiguration is not null. We want to avoid refreshing the configuration on
+                // retrieval error as this case should have already been hit before. This refresh handles the case
+                // where a new valid configuration was somehow published during validation time.
+                if (currentConfiguration != null)
+                {
+                    validationParameters.ConfigurationManager.RequestRefresh();
+                    validationParameters.RefreshBeforeValidation = true;
+                    var lastConfig = currentConfiguration;
+                    currentConfiguration = await validationParameters.ConfigurationManager.GetBaseConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+
+                    // Only try to re-validate using the newly obtained config if it doesn't reference equal the previously used configuration.
+                    if (lastConfig != currentConfiguration)
+                    {
+                        tokenValidationResult = await ValidateTokenAsync(jsonWebToken, validationParameters, currentConfiguration).ConfigureAwait(false);
+
+                        if (tokenValidationResult.IsValid)
+                        {
+                            validationParameters.ConfigurationManager.LastKnownGoodConfiguration = currentConfiguration;
+                            return tokenValidationResult;
+                        }
+                    }
+                }
+
+                if (validationParameters.ConfigurationManager.UseLastKnownGoodConfiguration)
+                {
+                    validationParameters.RefreshBeforeValidation = false;
+                    validationParameters.ValidateWithLKG = true;
+                    var recoverableException = tokenValidationResult.Exception;
+
+                    foreach (BaseConfiguration lkgConfiguration in validationParameters.ConfigurationManager.GetValidLkgConfigurations())
+                    {
+                        if (!lkgConfiguration.Equals(currentConfiguration) && TokenUtilities.IsRecoverableConfiguration(jsonWebToken.Kid, currentConfiguration, lkgConfiguration, recoverableException))
+                        {
+                            tokenValidationResult = await ValidateTokenAsync(jsonWebToken, validationParameters, lkgConfiguration).ConfigureAwait(false);
+
+                            if (tokenValidationResult.IsValid)
+                                return tokenValidationResult;
+                        }
+                    }
+                }
+            }
+        }
+
+        return tokenValidationResult;
+    }
+
+    private async ValueTask<TokenValidationResult> ValidateJWSAsync(JsonWebToken jsonWebToken, TokenValidationParameters validationParameters, BaseConfiguration configuration)
+    {
+        try
+        {
+            TokenValidationResult tokenValidationResult;
+            if (validationParameters.TransformBeforeSignatureValidation != null)
+                jsonWebToken = validationParameters.TransformBeforeSignatureValidation(jsonWebToken, validationParameters) as JsonWebToken;
+
+            if (validationParameters.SignatureValidator != null || validationParameters.SignatureValidatorUsingConfiguration != null)
+            {
+                var validatedToken = ValidateSignatureUsingDelegates(jsonWebToken, validationParameters, configuration);
+                tokenValidationResult = await ValidateTokenPayloadAsync(validatedToken, validationParameters, configuration).ConfigureAwait(false);
+                Validators.ValidateIssuerSecurityKey(validatedToken.SigningKey, validatedToken, validationParameters, configuration);
+            }
+            else
+            {
+                if (validationParameters.ValidateSignatureLast)
+                {
+                    tokenValidationResult = await ValidateTokenPayloadAsync(jsonWebToken, validationParameters, configuration).ConfigureAwait(false);
+                    if (tokenValidationResult.IsValid)
+                        tokenValidationResult.SecurityToken = ValidateSignatureAndIssuerSecurityKey(jsonWebToken, validationParameters, configuration);
+                }
+                else
+                {
+                    var validatedToken = ValidateSignatureAndIssuerSecurityKey(jsonWebToken, validationParameters, configuration);
+                    
+                    // tokenValidationResult contains Claims and ClaimsIdentity, which is created based on access token
+                    tokenValidationResult = await ValidateTokenPayloadAsync(validatedToken, validationParameters, configuration).ConfigureAwait(false);   // <-------------vt3
+                }
+            }
+
+            return tokenValidationResult;
+        }
     // ...
 }
 //------------------------------Ʌ
@@ -1905,10 +2275,12 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
     {
         _jsonClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties/json_type";
         _shortClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claimproperties/ShortTypeName";
+        //
         DefaultInboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.InboundClaimTypeMap);
-        DefaultMapInboundClaims = true;
+        DefaultMapInboundClaims = true;  // <-------------------------------------------------------------------jcm note that default is true
         DefaultOutboundClaimTypeMap = new Dictionary<string, string>(ClaimTypeMapping.OutboundClaimTypeMap);
         DefaultInboundClaimFilter = ClaimTypeMapping.InboundClaimFilter;
+        //
         DefaultOutboundAlgorithmMap = new Dictionary<string, string>
         {
             { "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256", "ES256" },
@@ -1948,11 +2320,6 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
 
     public override SecurityToken CreateToken(SecurityTokenDescriptor tokenDescriptor)
     {
-        if (tokenDescriptor == null)
-        {
-            throw LogHelper.LogArgumentNullException("tokenDescriptor");
-        }
-
         return CreateJwtSecurityTokenPrivate(tokenDescriptor.Issuer, tokenDescriptor.Audience, tokenDescriptor.Subject, tokenDescriptor.NotBefore, tokenDescriptor.Expires, tokenDescriptor.IssuedAt, tokenDescriptor.SigningCredentials, tokenDescriptor.EncryptingCredentials, tokenDescriptor.Claims, tokenDescriptor.TokenType, tokenDescriptor.AdditionalHeaderClaims, tokenDescriptor.AdditionalInnerHeaderClaims);
     }
 
@@ -2216,17 +2583,7 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
     }
 
     protected virtual ClaimsIdentity CreateClaimsIdentity(JwtSecurityToken jwtToken, string issuer, TokenValidationParameters validationParameters)
-    {
-        if (jwtToken == null)
-        {
-            throw LogHelper.LogArgumentNullException("jwtToken");
-        }
-
-        if (validationParameters == null)
-        {
-            throw LogHelper.LogArgumentNullException("validationParameters");
-        }
-
+    {    
         string actualIssuer = issuer;
         if (string.IsNullOrWhiteSpace(issuer))
         {
@@ -2238,12 +2595,12 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
             actualIssuer = "LOCAL AUTHORITY";
         }
 
-        if (!MapInboundClaims)
+        if (MapInboundClaims)  // <-------------------------jcm
         {
-            return CreateClaimsIdentityWithoutMapping(jwtToken, actualIssuer, validationParameters);
+            return CreateClaimsIdentityWithMapping(jwtToken, actualIssuer, validationParameters);
         }
 
-        return CreateClaimsIdentityWithMapping(jwtToken, actualIssuer, validationParameters);
+        return CreateClaimsIdentityWithoutMapping(jwtToken, actualIssuer, validationParameters);
     }
 
     private ClaimsIdentity CreateClaimsIdentityWithMapping(JwtSecurityToken jwtToken, string actualIssuer, TokenValidationParameters validationParameters)
@@ -2257,7 +2614,7 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
             }
 
             bool flag = true;
-            if (!_inboundClaimTypeMap.TryGetValue(claim.Type, out var value))
+            if (!_inboundClaimTypeMap.TryGetValue(claim.Type, out var value))  // <---------------------------jcm
             {
                 value = claim.Type;
                 flag = false;
@@ -2277,7 +2634,7 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
                 }
             }
 
-            Claim claim = new Claim(value, claim.Value, claim.ValueType, actualIssuer, actualIssuer, claimsIdentity);
+            Claim claim = new Claim(value, claim.Value, claim.ValueType, actualIssuer, actualIssuer, claimsIdentity);  // <---------------------------jcm
             if (claim.Properties.Count > 0)
             {
                 foreach (KeyValuePair<string, string> property in claim.Properties)
@@ -2418,6 +2775,164 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
     }
 }
 //----------------------------------Ʌ
+
+//------------------------------------V
+public class TokenValidationParameters
+{
+    private string _authenticationType;
+    private TimeSpan _clockSkew = DefaultClockSkew;
+    private string _nameClaimType = ClaimsIdentity.DefaultNameClaimType;
+    private string _roleClaimType = ClaimsIdentity.DefaultRoleClaimType;
+    private Dictionary<string, object> _instancePropertyBag;
+
+    public static readonly string DefaultAuthenticationType = "AuthenticationTypes.Federation"; // Note: The change was because 5.x removed the dependency on System.IdentityModel and we used a different string which was a mistake.
+    public static readonly TimeSpan DefaultClockSkew = TimeSpan.FromSeconds(300); // 5 min.
+    public const Int32 DefaultMaximumTokenSizeInBytes = 1024 * 250;
+
+    protected TokenValidationParameters(TokenValidationParameters other)
+    {   
+        // ...
+    }
+
+    public TokenValidationParameters()
+    {
+        LogTokenId = true;
+        LogValidationExceptions = true;
+        RequireExpirationTime = true;
+        RequireSignedTokens = true;
+        RequireAudience = true;
+        SaveSigninToken = false;
+        TryAllIssuerSigningKeys = true;
+        ValidateActor = false;
+        ValidateAudience = true;
+        ValidateIssuer = true;
+        ValidateIssuerSigningKey = false;
+        ValidateLifetime = true;
+        ValidateTokenReplay = false;
+    }
+
+    public TokenValidationParameters ActorValidationParameters { get; set; }
+    public AlgorithmValidator AlgorithmValidator { get; set; }
+    public AudienceValidator AudienceValidator { get; set; }
+    public string AuthenticationType { get; set; }  // _authenticationType
+   
+    [DefaultValue(300)]
+    public TimeSpan ClockSkew { get; set; }  // _clockSkew
+
+    public virtual TokenValidationParameters Clone()
+    {
+        return new(this)
+        {
+            IsClone = true
+        };
+    }
+
+    public virtual ClaimsIdentity CreateClaimsIdentity(SecurityToken securityToken, string issuer)
+    {
+        string nameClaimType = null;
+        if (NameClaimTypeRetriever != null)
+        {
+            nameClaimType = NameClaimTypeRetriever(securityToken, issuer);
+        }
+        else
+        {
+            nameClaimType = NameClaimType;
+        }
+
+        string roleClaimType = null;
+        if (RoleClaimTypeRetriever != null)
+        {
+            roleClaimType = RoleClaimTypeRetriever(securityToken, issuer);
+        }
+        else
+        {
+            roleClaimType = RoleClaimType;
+        }
+
+        if (LogHelper.IsEnabled(EventLogLevel.Informational))
+            LogHelper.LogInformation(LogMessages.IDX10245, securityToken);
+
+        return new ClaimsIdentity(authenticationType: AuthenticationType ?? DefaultAuthenticationType, nameType: nameClaimType ?? ClaimsIdentity.DefaultNameClaimType, roleType: roleClaimType ?? ClaimsIdentity.DefaultRoleClaimType);
+    }
+
+    public BaseConfigurationManager ConfigurationManager { get; set; }
+    public CryptoProviderFactory CryptoProviderFactory { get; set; }
+    public string DebugId { get; set; }
+
+    [DefaultValue(true)]
+    public bool IgnoreTrailingSlashWhenValidatingAudience { get; set; } = true;
+    public bool IncludeTokenOnFailedValidation { get; set; } = false;
+    public IssuerSigningKeyValidator IssuerSigningKeyValidator { get; set; }
+    public IssuerSigningKeyValidatorUsingConfiguration IssuerSigningKeyValidatorUsingConfiguration { get; set; }
+    public IDictionary<string, object> InstancePropertyBag => _instancePropertyBag ??= new Dictionary<string, object>();
+    public bool IsClone { get; protected set; } = false;
+    public SecurityKey IssuerSigningKey { get; set; }
+    public IssuerSigningKeyResolver IssuerSigningKeyResolver { get; set; }
+    public IssuerSigningKeyResolverUsingConfiguration IssuerSigningKeyResolverUsingConfiguration { get; set; }
+    public IEnumerable<SecurityKey> IssuerSigningKeys { get; set; }
+    public IssuerValidator IssuerValidator { get; set; }
+    internal IssuerValidatorAsync IssuerValidatorAsync { get; set; }
+    public IssuerValidatorUsingConfiguration IssuerValidatorUsingConfiguration { get; set; }
+    public TransformBeforeSignatureValidation TransformBeforeSignatureValidation { get; set; }
+    public LifetimeValidator LifetimeValidator { get; set; }
+
+    [DefaultValue(true)]
+    public bool LogTokenId { get; set; }
+
+    [DefaultValue(true)]
+    public bool LogValidationExceptions { get; set; }
+
+    public string NameClaimType { get; set; }  // _nameClaimType
+
+    public Func<SecurityToken, string, string> NameClaimTypeRetriever { get; set; }
+
+    public IDictionary<string, object> PropertyBag { get; set; }
+
+    public bool RefreshBeforeValidation { get; set; }
+
+    [DefaultValue(true)]
+    public bool RequireAudience { get; set; }
+
+    [DefaultValue(true)]
+    public bool RequireExpirationTime { get; set; }
+
+    [DefaultValue(true)]
+    public bool RequireSignedTokens { get; set; }
+
+    public string RoleClaimType { get; set; }  // _roleClaimType
+
+    public Func<SecurityToken, string, string> RoleClaimTypeRetriever { get; set; }
+    public bool SaveSigninToken { get; set; }
+    public SignatureValidator SignatureValidator { get; set; }
+    public SignatureValidatorUsingConfiguration SignatureValidatorUsingConfiguration { get; set; }
+    public SecurityKey TokenDecryptionKey { get; set; }
+    public TokenDecryptionKeyResolver TokenDecryptionKeyResolver { get; set; }
+    public IEnumerable<SecurityKey> TokenDecryptionKeys { get; set; }
+    public TokenReader TokenReader { get; set; }
+    public ITokenReplayCache TokenReplayCache { get; set; }
+    public TokenReplayValidator TokenReplayValidator { get; set; }
+    [DefaultValue(true)]
+    public bool TryAllIssuerSigningKeys { get; set; }
+    public TypeValidator TypeValidator { get; set; }
+    public bool ValidateActor { get; set; }
+    [DefaultValue(true)]
+    public bool ValidateAudience { get; set; }
+    [DefaultValue(true)]
+    public bool ValidateIssuer { get; set; }
+    public bool ValidateWithLKG { get; set; }
+    public bool ValidateIssuerSigningKey { get; set; }
+    [DefaultValue(true)]
+    public bool ValidateLifetime { get; set; }
+    public bool ValidateSignatureLast { get; set; }
+    public bool ValidateTokenReplay { get; set; }
+    public IEnumerable<string> ValidAlgorithms { get; set; }
+    public string ValidAudience { get; set; }
+    public IEnumerable<string> ValidAudiences { get; set; }
+    public string ValidIssuer { get; set; }
+    public IEnumerable<string> ValidIssuers { get; set; }
+    public IEnumerable<string> ValidTypes { get; set; }
+}
+//------------------------------------Ʌ
 ```
 
 ```C#
@@ -2484,7 +2999,7 @@ public abstract class ClaimAction
     {
         ClaimType = claimType;
         ValueType = valueType;
-    }>
+    }
     public string ClaimType { get; }
     public string ValueType { get; }
     public abstract void Run(JsonElement userData, ClaimsIdentity identity, string issuer);
@@ -2515,7 +3030,7 @@ public class JsonKeyClaimAction : ClaimAction
 
     public string JsonKey { get; }
 
-    public override void Run(JsonElement userData, ClaimsIdentity identity, string issuer)
+    public override void Run(JsonElement userData, ClaimsIdentity identity, string issuer)  // <--------------jcm
     {
         if (!userData.TryGetProperty(JsonKey, out var value))
         {

@@ -201,7 +201,7 @@ public class AuthenticationMiddleware
             context.Features.Set<IHttpAuthenticationFeature>(authFeatures);
             context.Features.Set<IAuthenticateResultFeature>(authFeatures);  // <------------cache the result so that it could be used by PolicyEvaluator later when there is extra
                                                                              // AuthenticationScheme specified on endpoints as [Authorize( AuthenticationSchemes = "xxx, yyy")]
-                                                                             // so that the default scheme's authentication won't run again unnecessarily
+                                                                             // so that the default scheme's authentication won't run again unnecessarily, check pe flag
          }
       }
 
@@ -1896,7 +1896,7 @@ public class PolicyEvaluator : IPolicyEvaluator
          }
       }
 
-      // <---------------this is to get the cache for the default scheme's authenticate result in the first place
+      // <---------------pe, this is to get the cache for the default scheme's authenticate result in the first place
       return context.Features.Get<IAuthenticateResultFeature>()?.AuthenticateResult ?? DefaultAuthenticateResult(context);
 
       static AuthenticateResult DefaultAuthenticateResult(HttpContext context)

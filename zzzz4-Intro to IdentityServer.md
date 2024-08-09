@@ -197,7 +197,7 @@ https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_u
 ```
 
 4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware`'s `AuthorizeEndpoint` handles it (q2 on IdentityServer4 Source Code)
-and `AuthorizeEndpoint` redirects users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost` , the redirection request is below:
+and `AuthorizeEndpoint` redirects users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost`, the redirection request is below:
 
 ```C#
 /*
@@ -221,7 +221,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 /*  https://localhost:7184/signin-oidc POST
     body:
     {
-        code: EA4785B99D609C359E14512C70724FFEFFC15F5EA445486B1B072E73CF3FF8CC-1
+        code: EA4785B99D609C359E14512C70724FFEFFC15F5EA445486B1B072E73CF3FF8CC-1   // <----------------auth code
         scope: openid+profile
         state: CfDJ8Fr2n1UxboNJlI8uHVA4skryuRiPt-1-mhFSMYxXnAqQXXX
         session_state: e35UPvqWXV_cxZ3bBNM-fZEpln9j5Qh4JrVxbX0L9is.28084428FDF3B4FCDC5EDB4D69D3DC4F
@@ -230,11 +230,13 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called (o3.2) to get access token and id token), also note that we lose "user = Emma" claim in this process because we use IdToken to generate ClaimsIdentity again and this idToken doesn't contain user name for most of time unless we configure it to. Finally, **Client calls `Context.SignInAsync()` to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called (o3.2) to get access token and id token). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
 Note that cookie can be:
-**A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end),
-so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
-**B**: `OpenIdConnectOptions.GetClaimsFromUserInfoEndpoint` is set to `true`, then `OpenIdConnectHandler` will call `https://localhost:5001/connect/userinfo` (access token is required in the bear header with this request) to get userinfo from IDP, the response will contain full user info and is used to created the `AuthenticationTicket`, so now **user-to-client** cookie can contain user info claims such as "name", "role" etc
+
+**A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end), so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
+
+**B**: `OpenIdConnectOptions.GetClaimsFromUserInfoEndpoint` is set to `true`, then `OpenIdConnectHandler` will call `https://localhost:5001/connect/userinfo` (access token is required in the bear header with this request) to get userinfo from IDP. The scopes inside Access Token will be extracted such as "sub", "name", "given_name", "family_name" claims because of `IdentityResource`/`Resource`'s `ICollection<string>` of `UserClaims`. Then `IProfileService` will be used to generate those claims. (u1.6, check `TestUserProfileService` for example)
+Later `AuthenticationTicket` is created, so now **user-to-client** cookie can contain user info claims such as "name", "role" etc. Note that the id token still won't contains 'UserClaims". It is not a good practice to let id token contains "user specific claims" from userinfo endpoint.
 
 Important thing to know, in the subsequent requst, only **user-to-client** cookie is needed for user to be authenticated, however if you develop logout functionality by only sign out this 
 user-to-client cooke, it will have issue shows below.
@@ -292,11 +294,13 @@ https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053f
 9. check `e2` flag you will see inside `/Account/Logout` page, it calls `await HttpContext.SignOutAsync()` which clear out user-idp cookie, i.e clear user session
 
 
-**!!!!!!!!!!!!!!!!Question: what if user-to-client cookie is still valid while access token expired? users are not supporsed to be active state while he can still sign in clientApp, sound weird or AuthenticationTicket created by client, the expire is set to match token expiry?**
+**!!!!!!!!!!!!!!!!Question: what if user-to-client cookie is still valid while access token expired? users are not supporsed to be active state while he can still sign in clientApp, also how idp reconginize access token and associate it with user?**
 
+
+10. Send requests to API with access token. API's `User`'s `ClaimsPrincipal` is constructed by `JwtBearerHandler` based on the access token
 
 =========================================================================
-Before `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`
+Before `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`  (check jcm flag)
 
 ```C#
 /*
@@ -309,7 +313,9 @@ Claim type: given_name - Claim value: Emma
 Claim type: family_name - Claim value: Flagg
 */
 ```
+
 After `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`
+
 ```C#
 /*
 Claim type: amr - Claim value: pwd
@@ -322,10 +328,133 @@ Claim type: family_name - Claim value: Flagg
 */
 ```
 
+by default, `JsonWebTokenHandler.DefaultInboundClaimTypeMap` maps claims in jwt to microsoft's "soap" alike claim type, since we call `Clear()` to remove the mapping, we can get the "shorter" jwt alike claim
 
+================================================================================
+
+Why `@if (User.IsInRole("PayingUser"))` might not work, there is why:
+
+```C#
+.AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters()  // <---------------cci
+    {
+        NameClaimType = "give_name",
+        RoleClaimType = "role"
+    };
+});
+
+public class ClaimsPrincipal
+{
+    public virtual bool IsInRole(string role)
+    {
+        for (int i = 0; i < _identities.Count; i++)
+        {
+            if (_identities[i] != null)
+            {
+                if (_identities[i].HasClaim(_identities[i].RoleClaimType, role))  // RoleClaimType is different when TokenValidationParameters is set
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+}
+
+/*  for the ClaimIdentity
+
+Before TokenValidationParameters setting:
+    RoleClaimType is http://schemas.microsoft.com/ws/2008/06/identity/claims/role
+    NameClaimType is http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name
+
+After TokenValidationParameters setting:
+    RoleClaimType is "role"
+    NameClaimType is "give_name"
+
+which affect the usage on the Razor Page 
+
+@if (User.IsInRole("PayingUser"))  // is false even though user is PayingUser if we don't setup TokenValidationParameters in cci
+{
+    <li class="nav-item">
+        <a class="nav-link text-dark" asp-area="" asp-controller="Gallery" asp-action="AddImage">Add an Image</a>
+    </li>
+}   
+*/
+```
+==========================================================================================
+
+Final Tokens:
+
+**access token**:
+
+```json
+{
+  "alg": "RS256",
+  "kid": "7AB6CB1B3C3DAA763A562E4AEFED9E42",
+  "typ": "at+jwt"
+}
+
+{
+  "iss": "https://localhost:5001",
+  "nbf": 1722867025,
+  "iat": 1722867025,
+  "exp": 1722870625,
+  "aud": [
+    "imagegalleryapi",
+    "https://localhost:5001/resources"   // <-------------idp is in the audience claim because clientApp needs to pass access token to idp to call UserInfo endpoint, and 
+                                         // idp needs to verify this access token, that's why idp is also an audience of this token
+  ],
+  "scope": [
+    "openid",
+    "profile",
+    "imagegalleryapi.fullaccess",
+    "roles"
+  ],
+  "amr": [
+    "pwd"
+  ],
+  "client_id": "imagegalleryclient",
+  "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+  "auth_time": 1722866757,
+  "idp": "local",
+  "sid": "ECD46FC90D6FDB3DEDAE3C5C4E0B4471",
+  "jti": "C1EAB2F678AD8754945E89EC970129DD"
+}
+
+```
+
+**id token**:
+
+```json
+{
+  "alg": "RS256",
+  "kid": "7AB6CB1B3C3DAA763A562E4AEFED9E42",
+  "typ": "JWT"
+}
+
+{
+  "iss": "https://localhost:5001",
+  "nbf": 1722867025,
+  "iat": 1722867025,
+  "exp": 1722867325,
+  "aud": "imagegalleryclient",
+  "amr": [
+    "pwd"
+  ],
+  "nonce": "638584638230545591.NDc5MGNjY2QtYmM2NC00ODdlLTk3NzQtZTE5MGZhNGY1MGJkZGU2MThiMmQtYzRkYi00N2EwLWEwZTAtZmQ1NTcwODY3YjYy",
+  "at_hash": "AKRurD4s-cFVucp4AdaBlg",
+  "sid": "ECD46FC90D6FDB3DEDAE3C5C4E0B4471",
+  "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+  "auth_time": 1722866757,
+  "idp": "local"
+}
+```
 
 
 ==========================================================================================
+
 
 ```C#
 public abstract class Resource

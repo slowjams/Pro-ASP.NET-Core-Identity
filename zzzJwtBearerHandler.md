@@ -9,7 +9,7 @@ public class Startup
         services
             .AddAuthentication()
             .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, opts => {  // opts is JwtBearerOptions
-                // opts.Authority = "https://localhost:5005"  <------------when you use IdentityServer4, check i1
+                // opts.Authority = "https://localhost:5005"  <------------when you use IdentityServer, check i1
                 opts.TokenValidationParameters.ValidateAudience = false;
                 opts.TokenValidationParameters.ValidateIssuer = false;
                 opts.TokenValidationParameters.IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Configuration["BearerTokens:Key"]))
@@ -160,6 +160,9 @@ public class ValuesController : Controller  // controller that uses jwt
 //---------------------------Ʌ
 ```
 
+
+## Source Code
+
 ```C#
 //---------------------------V
 public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
@@ -174,7 +177,7 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
 
     protected override Task<object> CreateEventsAsync() => Task.FromResult<object>(new JwtBearerEvents());
 
-    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
+    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()  // <---------------------------j0
     {
         string? token;
         try
@@ -194,7 +197,7 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
  
             if (string.IsNullOrEmpty(token))
             {
-                string authorization = Request.Headers.Authorization.ToString();
+                string authorization = Request.Headers.Authorization.ToString();  // <---------------------------j0.1
  
                 // If no authorization header found, nothing to process further
                 if (string.IsNullOrEmpty(authorization))
@@ -202,9 +205,9 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
                     return AuthenticateResult.NoResult();
                 }
  
-                if (authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))  // <----------------------------------
+                if (authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
                 {
-                    token = authorization.Substring("Bearer ".Length).Trim();
+                    token = authorization.Substring("Bearer ".Length).Trim();   // <-----------------------------j0.2
                 }
  
                 // If no token found, no further work possible
@@ -214,21 +217,21 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
                 }
             }
  
-            TokenValidationParameters tvp = await SetupTokenValidationParametersAsync();  // <-----i1, check this method carefully to see how "https://localhost:5005" is called
+            TokenValidationParameters tvp = await SetupTokenValidationParametersAsync();  // <-------------i1
             List<Exception>? validationFailures = null;
             SecurityToken? validatedToken = null;
             ClaimsPrincipal? principal = null;  // <----------------------
  
             if (!Options.UseSecurityTokenValidators)
             {
-                foreach (var tokenHandler in Options.TokenHandlers)
+                foreach (var tokenHandler in Options.TokenHandlers)  // <-----------------------------j0.3 tokenHandler is Microsoft.IdentityModel.JsonWebTokens.JsonWebTokenHandler
                 {
                     try
                     {
-                        TokenValidationResult tokenValidationResult = await tokenHandler.ValidateTokenAsync(token, tvp);           
+                        TokenValidationResult tokenValidationResult = await tokenHandler.ValidateTokenAsync(token, tvp);      // <-----------------------------j0.4 -> change to vt       
                         if (tokenValidationResult.IsValid)
                         {
-                            principal = new ClaimsPrincipal(tokenValidationResult.ClaimsIdentity);  // <----------------------
+                            principal = new ClaimsPrincipal(tokenValidationResult.ClaimsIdentity);  // <----------------------j0.5
                             validatedToken = tokenValidationResult.SecurityToken;
                             break;
                         }
@@ -281,7 +284,7 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
                 await Events.TokenValidated(tokenValidatedContext);
                 if (tokenValidatedContext.Result != null)
                 {
-                    return tokenValidatedContext.Result;  // <-------------------------return AuthenticateResult
+                    return tokenValidatedContext.Result;  // <-------------------------j0.6 return AuthenticateResult
                 }
  
                 if (Options.SaveToken)
