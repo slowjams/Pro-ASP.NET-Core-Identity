@@ -694,7 +694,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         throw new NotImplementedException($"An unsupported authentication method has been configured: {base.Options.AuthenticationMethod}");
     }
 
-    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()   // <----------------------------------------o3.0
+    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()   // <----------------------------------------o3.0, handes https://localhost:7184/signin-oidc
     {
         base.Logger.EnteringOpenIdAuthenticationHandlerHandleRemoteAuthenticateAsync(GetType().FullName);
         OpenIdConnectMessage authorizationResponse = null;
@@ -830,7 +830,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             if (!string.IsNullOrEmpty(authorizationResponse.Code))
             {
                 var authorizationCodeReceivedContext = 
-                    await RunAuthorizationCodeReceivedEventAsync(authorizationResponse, user, properties!, jwt);  // <----------------------o3.1
+                    await RunAuthorizationCodeReceivedEventAsync(authorizationResponse, user, properties!, jwt);  // <----------------------o3.1, user, jwt is null here
 
                 if (authorizationCodeReceivedContext.Result != null)
                 {
@@ -842,7 +842,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 var tokenEndpointRequest = authorizationCodeReceivedContext.TokenEndpointRequest;
                 // If the developer redeemed the code themselves...
                 tokenEndpointResponse = authorizationCodeReceivedContext.TokenEndpointResponse;
-                jwt = authorizationCodeReceivedContext.JwtSecurityToken!;
+                jwt = authorizationCodeReceivedContext.JwtSecurityToken!;  // jwt is null here
                                                                                                         // <-------------------------note the there is no id token here
                 if (!authorizationCodeReceivedContext.HandledCodeRedemption)
                 {
@@ -935,7 +935,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
 
             if (Options.GetClaimsFromUserInfoEndpoint)  // when `options.GetClaimsFromUserInfoEndpoint = true`
             {
-                return await GetUserInformationAsync(tokenEndpointResponse ?? authorizationResponse, jwt!, user!, properties!);  // <----------------------o4.4
+                return await GetUserInformationAsync(tokenEndpointResponse ?? authorizationResponse, jwt!, user!, properties!);  // <----------------------!important o4.4
                 // note that we return here immediately compared to o4.8, the AuthenticationTicket in o4.8 is created from id token
                 // while here we get full user claims into AuthenticationTicket then into cookie
             }
@@ -1042,6 +1042,14 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                                                                      // TokenEndpoint is https://localhost:5001/connect/token
         HttpRequestMessage httpRequestMessage = new HttpRequestMessage(HttpMethod.Post, tokenEndpointRequest.TokenEndpoint ?? _configuration?.TokenEndpoint);
         httpRequestMessage.Content = new FormUrlEncodedContent(tokenEndpointRequest.Parameters);
+        /* Content of the Post Request to the idp's token endpoint is 
+          {[client_id, imagegalleryclient]}
+          {[client_secret, secret]}
+          {[code, D25B015FE0ADAE97B433F354D0A49A8F208A32511F10B9DDEB57B29CEF2B74D4-1]}
+          {[grant_type, authorization_code]}
+          {[redirect_uri, https://localhost:7184/signin-oidc]}  // <------------not sure why it is needed as we already in the /signin-oidc request
+          {[code_verifier, NK-Vskzz20wgh3vtmyIrx1aavewHUaT_EH8EFYk_llM]}
+        */
         httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
 
         HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <------------------------o3.2.1.

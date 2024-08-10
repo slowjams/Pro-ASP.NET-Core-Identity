@@ -249,6 +249,7 @@ fail: Microsoft.AspNetCore.Server.Kestrel[13]
 
 if you want to know how 500 status code is set, check https://source.dot.net/#Microsoft.AspNetCore.Server.Kestrel.Core/Internal/Http/HttpProtocol.cs,1049 and https://source.dot.net/#Microsoft.AspNetCore.Server.Kestrel.Core/Internal/Http/HttpProtocol.cs,600
 
+
 #### Important Fact 0 - multiple `[Authorize(...)]` is AND not OR, but `[Authorize(AuthenticationSchemes = "xxx")]` is tricky
 
 When you have mutiple `AuthorizeAttribute` like  as

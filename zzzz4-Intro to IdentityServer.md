@@ -230,13 +230,13 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called (o3.2) to get access token and id token). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
 Note that cookie can be:
 
 **A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end), so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
 
 **B**: `OpenIdConnectOptions.GetClaimsFromUserInfoEndpoint` is set to `true`, then `OpenIdConnectHandler` will call `https://localhost:5001/connect/userinfo` (access token is required in the bear header with this request) to get userinfo from IDP. The scopes inside Access Token will be extracted such as "sub", "name", "given_name", "family_name" claims because of `IdentityResource`/`Resource`'s `ICollection<string>` of `UserClaims`. Then `IProfileService` will be used to generate those claims. (u1.6, check `TestUserProfileService` for example)
-Later `AuthenticationTicket` is created, so now **user-to-client** cookie can contain user info claims such as "name", "role" etc. Note that the id token still won't contains 'UserClaims". It is not a good practice to let id token contains "user specific claims" from userinfo endpoint.
+Later `AuthenticationTicket` is created (o4.4), so now **user-to-client** cookie can contain user info claims such as "name", "role" etc. Note that the id token still won't contains 'UserClaims". It is not a good practice to let id token contains "user specific claims" from Userinfo endpoint.
 
 Important thing to know, in the subsequent requst, only **user-to-client** cookie is needed for user to be authenticated, however if you develop logout functionality by only sign out this 
 user-to-client cooke, it will have issue shows below.
@@ -297,7 +297,59 @@ https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053f
 **!!!!!!!!!!!!!!!!Question: what if user-to-client cookie is still valid while access token expired? users are not supporsed to be active state while he can still sign in clientApp, also how idp reconginize access token and associate it with user?**
 
 
-10. Send requests to API with access token. API's `User`'s `ClaimsPrincipal` is constructed by `JwtBearerHandler` based on the access token
+10. Send requests to API with access token. It is important to note that Api's `HttpContext.User`'s `ClaimsPrincipal` is constructed by `JwtBearerHandler` based on the access token (check j0.4 flag).
+
+Important to know the Claims difference between the ClientApi and Api
+
+```C#
+// ClientApi
+[HttpGet()]
+public async Task<ActionResult<IEnumerable<Image>>> GetImages()
+{
+    var user = User;  // <-----------------------------------contains all "UserInfo" claims such as {given_name: Emma}, {family_name: Flagg}, {role: PayingUser}, {country: be} etc
+    // ...
+}
+
+// Api
+public async Task<IActionResult> Index()
+{
+    var user = User;  // <---------------------------doesn't contains some "UserInfo" claims like given_name, family_name, but contains {role: PayingUser}, {country: be} 
+    // ...            // beause idp config has `new ApiResource("imagegalleryapi", "Image Gallery API", new [] { "role", "country" })`
+}
+```
+
+Below shows how addition Claims such as "role"  is included in Access Token:
+
+```C#
+// IdentityServer's Config
+public static IEnumerable<ApiResource> ApiResources =>
+    new ApiResource[]
+    {
+        new ApiResource("imagegalleryapi", "Image Gallery API", new [] { "role" })  // role here results the access token to contains a role claim such as { "role" : "payinguser" }
+        { 
+            Scopes = { "xxx" } 
+        },
+    };
+
+// Api
+[HttpPost()]
+[Authorize(Roles = "PayingUser")] // resource  is protected
+public async Task<ActionResult<Image>> CreateImage([FromBody] ImageForCreation imageForCreation)
+{
+    var claimsPrincipal = User;   // contains { "role" : "payinguser" }
+    // ...
+}
+```
+
+There is an intesting thing that if you turn off role scope in client (remove `options.Scope.Add("roles")`) while IDP still have `new ApiResource("imagegalleryapi", "Image Gallery API", new [] { "role" }) `. This results the access token to have `{ "role": "PayingUser" }` claim so that if you put a debugger in API service's you can also see the HttpContext.User contains this role claim, but `HttpContext.User` in the Client's controller won't have this role claim
+
+=========================================================================
+
+## Scope-based Authorization
+
+This is about what a client application is allowed to do, not about who the end-user is
+
+
 
 =========================================================================
 Before `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`  (check jcm flag)
@@ -419,6 +471,7 @@ Final Tokens:
   "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
   "auth_time": 1722866757,
   "idp": "local",
+  "role": "PayingUser",   // <---------------because of the config: new ApiResource("imagegalleryapi", "Image Gallery API", new [] { "role" }) 
   "sid": "ECD46FC90D6FDB3DEDAE3C5C4E0B4471",
   "jti": "C1EAB2F678AD8754945E89EC970129DD"
 }

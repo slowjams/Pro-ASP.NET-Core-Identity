@@ -228,7 +228,9 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
                 {
                     try
                     {
+                        // tokenValidationResult contains Claims and ClaimsIdentity, which is created based on access token
                         TokenValidationResult tokenValidationResult = await tokenHandler.ValidateTokenAsync(token, tvp);      // <-----------------------------j0.4 -> change to vt       
+                        
                         if (tokenValidationResult.IsValid)
                         {
                             principal = new ClaimsPrincipal(tokenValidationResult.ClaimsIdentity);  // <----------------------j0.5
