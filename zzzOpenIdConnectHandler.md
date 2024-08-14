@@ -98,7 +98,7 @@ public class OpenIdConnectOptions : RemoteAuthenticationOptions
     public ISecurityTokenValidator SecurityTokenValidator { get; set; }
     public TokenValidationParameters TokenValidationParameters { get; set; } = new TokenValidationParameters();
 
-    public bool UseTokenLifetime { get; set; }
+    public bool UseTokenLifetime { get; set; }  // <--------------------------------------------------------------
     public bool SkipUnrecognizedRequests { get; set; }
     public bool DisableTelemetry { get; set; }
 
@@ -1251,7 +1251,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             });
         }
 
-        properties.StoreTokens(list);  // <------------------o4.3 save token into AuthenticationProperties.Items which will be part of AuthenticationTicket then serilzed into cookies
+        properties.StoreTokens(list); // <------------! o4.3 save both tokens into AuthenticationProperties.Items which will be part of AuthenticationTicket then serilzed into cookies
     }
 
     private void WriteNonceCookie(string nonce)
@@ -1459,6 +1459,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         return context;
     }
 
+    // tl, only idToken need to be validated
     private ClaimsPrincipal ValidateToken(string idToken, AuthenticationProperties properties, TokenValidationParameters validationParameters, out JwtSecurityToken jwt)
     {
         if (!base.Options.SecurityTokenValidator.CanReadToken(idToken))
@@ -1485,7 +1486,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                 throw new SecurityTokenException(string.Format(CultureInfo.InvariantCulture, Resources.UnableToValidateToken, idToken));
             }
 
-            if (base.Options.UseTokenLifetime)
+            if (base.Options.UseTokenLifetime)  // <-------------------------------tl
             {
                 DateTime validFrom = validatedToken.ValidFrom;
                 if (validFrom != DateTime.MinValue)
@@ -1493,7 +1494,8 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
                     properties.IssuedUtc = validFrom;
                 }
 
-                DateTime validTo = validatedToken.ValidTo;
+                // https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet/blob/5853e4ccc1396a6c775aef41619b0d5798779bfc/src/System.IdentityModel.Tokens.Jwt/JwtSecurityTokenHandler.cs#L1173
+                DateTime validTo = validatedToken.ValidTo;  // <-----------------------tl
                 if (validTo != DateTime.MinValue)
                 {
                     properties.ExpiresUtc = validTo;

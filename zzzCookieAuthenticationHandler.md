@@ -16,7 +16,7 @@ public class Startup
         services.AddAuthentication(opts => {  // opts is AuthenticationOptions
             opts.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;   // DefaultScheme is ""Cookies"
         }).AddCookie(opts => {
-            opts.LoginPath = "/signin";   // <---------------for "401 Challenge" purpose
+            opts.LoginPath = "/";   // <---------------for "401 Challenge" purpose
             opts.AccessDeniedPath = "/signin/403";
         });
 

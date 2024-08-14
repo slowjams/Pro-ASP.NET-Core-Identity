@@ -230,7 +230,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** before redirecting users to its original request e.g home/index
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** (o5.0) before redirecting users to its original request e.g home/index
 Note that cookie can be:
 
 **A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end), so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
@@ -345,12 +345,22 @@ There is an intesting thing that if you turn off role scope in client (remove `o
 
 =========================================================================
 
-## Scope-based Authorization
 
-This is about what a client application is allowed to do, not about who the end-user is
+## Token Lifetime Management
 
+**Id tokens have very short default of `5 minutes` lifetime** as it is issued once to create `ClaimsIdentity`. So let's user-to-client cookie (that contains the `AuthenticateTicket` created based on id token in the first time) expires after 3 mins, then `OpenIdConnectHandler.ChallengeAsync()` is called, the id token can be used again to construct `ClaimsIdentity` without requiring users to signin again with idp. However, if the cookie expires after one hour, then user has to sign in with idp again
 
+**Accesstokens have default of `1 hour` lifetime**
 
+Note the user-to-client cookie (that contains id token and access token) expiration time is dependent on `OpenIdConnectOptions.UseTokenLifetime`  (check `tl` flag). So if you set `Client.IdentityTokenLifetime = 12` on idp's end, it results the id token and accees token to contain { "exp" : xxxx }, so later in step 7- handling `https://localhost:7184/signin-oidc` when clientApp calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie, the cookie expire time is set to match "12 seconds", since both id token and access token get stored in the cookie, so  setting `IdentityTokenLifetime` also affect access token, but there is also a property call `Client.AccessTokenLifetime = numberOfSeconds`, this have nothing to do with cookie, it is only used by idp's end to control the lifetime of the access token, so the Api's `JwtBearerHandler` need to honour this setting. So in a nutshell,
+
+`IdentityTokenLifetime` makes the id token contains a { "exp" : xxxx } and xxx will be used to set user-to-client cookie's expire time on ClientApp's end. While `AccessTokenLifetime` makes identity token contains  a { "exp" : yyyy } where yyy is mainly for idp to recieve and handle requests from Api's  `JwtBearerHandler` based on if the access token has expired
+
+If you set `OpenIdConnectOptions.UseTokenLifetime` to `true` then refresh the page, it still remains signin (if you watch broswer closely, you will see the browser flash a request of `https://localhost:5001/connect/authorize`), why? because of the refresh token behiend the scene
+
+`Client.AbsoluteRefreshTokenLifetime` is default to 30 days.
+
+Q1. But why `AccessTokenLifetime = 10` then refresh still work, you have to close the browser and run app again to see 401 Unauthorized (not 403)
 =========================================================================
 Before `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`  (check jcm flag)
 
@@ -475,7 +485,6 @@ Final Tokens:
   "sid": "ECD46FC90D6FDB3DEDAE3C5C4E0B4471",
   "jti": "C1EAB2F678AD8754945E89EC970129DD"
 }
-
 ```
 
 **id token**:
