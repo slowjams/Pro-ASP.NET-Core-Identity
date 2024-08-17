@@ -190,13 +190,14 @@ https://localhost:7184  (goes to ImageGallery.Client's GalleryController's Index
 (a1) invoke `https://localhost:5001/.well-known/openid-configuration` and `https://localhost:5001/.well-known/openid-configuration/jwks`
 
 redirect users to `https://localhost:5001/connect/authorize` (a2)
+
 ```C#
 /*
 https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=gxNP3gQQtCv6ybY-1SzRhuJ2lAJcw4xfY63-N0VMp_M&code_challenge_method=S256&response_mode=form_post&nonce=638574178447973386.ZjQ1NjBhYzAtOTVjOC00OWQyLWFjOWUtYWEwYTIwYzNhMWU5ZGQ4NDU0MTktOGQyMi00ZmEzLTlkZjktMDQ4ZTY4MDhiMDM2&state=CfDJ8Fr2n1UxboNJlI8uHVA4skoqzWvRBESNmQtbapScbGyypqXNQqM3EO-KWHib-2DDMkYQWldSjTcokpFYtMjQJD5XN1rtDfaVAAwhUvzEo6e57hN8e2izgZZm4TuLTwaZpBDb1QsoIjGnD-aiIgb_7F9w1k0VBi34RIiLbwcsR-rxYokuDnAeZp0Ndx4TlExO158E9m-58DEigNRBCuaGPWSjZuw2fyT3Z4b6DblgZKSyTGjUwJfu7n8L01lr-CL3xjzc7ZW7Vws647ScwLFdbqAu_IEnDiEokswUxNGR4c6Th5roQZwVmq6T4HvQWGq2J0Xy9KFP6nfZbqLx_hKMht_cqC33G_HSbz_z_GmAJzw5igImxo8LjNRVazD18_t8oA&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0
 */
 ```
 
-4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware`'s `AuthorizeEndpoint` handles it (q2 on IdentityServer4 Source Code)
+4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware`'s `AuthorizeEndpoint` handles it (q2 on IdentityServer Source Code)
 and `AuthorizeEndpoint` redirects users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost`, the redirection request is below:
 
 ```C#
@@ -215,7 +216,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request (to users)`https://localhost:7184/signin-oidc` with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request from client to user using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -299,6 +300,7 @@ https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053f
 
 10. Send requests to API with access token. It is important to note that Api's `HttpContext.User`'s `ClaimsPrincipal` is constructed by `JwtBearerHandler` based on the access token (check j0.4 flag).
 
+
 Important to know the Claims difference between the ClientApi and Api
 
 ```C#
@@ -352,15 +354,232 @@ There is an intesting thing that if you turn off role scope in client (remove `o
 
 **Accesstokens have default of `1 hour` lifetime**
 
-Note the user-to-client cookie (that contains id token and access token) expiration time is dependent on `OpenIdConnectOptions.UseTokenLifetime`  (check `tl` flag). So if you set `Client.IdentityTokenLifetime = 12` on idp's end, it results the id token and accees token to contain { "exp" : xxxx }, so later in step 7- handling `https://localhost:7184/signin-oidc` when clientApp calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie, the cookie expire time is set to match "12 seconds", since both id token and access token get stored in the cookie, so  setting `IdentityTokenLifetime` also affect access token, but there is also a property call `Client.AccessTokenLifetime = numberOfSeconds`, this have nothing to do with cookie, it is only used by idp's end to control the lifetime of the access token, so the Api's `JwtBearerHandler` need to honour this setting. So in a nutshell,
+Note the **user-to-client cookie (that contains id token and access token) expiration time is controlled by `Client.IdentityTokenLifetime` when `OpenIdConnectOptions.UseTokenLifetime` is true**  (check `tl` flag). So if you set `Client.IdentityTokenLifetime = 12` on idp's end, it results the id token and accees token to contain { "exp" : xxxx }, so later in step 7- handling `https://localhost:7184/signin-oidc` when clientApp calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie, the cookie expire time is set to match "12 seconds"
 
-`IdentityTokenLifetime` makes the id token contains a { "exp" : xxxx } and xxx will be used to set user-to-client cookie's expire time on ClientApp's end. While `AccessTokenLifetime` makes identity token contains  a { "exp" : yyyy } where yyy is mainly for idp to recieve and handle requests from Api's  `JwtBearerHandler` based on if the access token has expired
+For `Client.AccessTokenLifetime = numberOfSeconds`, this have nothing to do with cookie, it is only used by idp's end to control the lifetime of the access token, so the Api's `JwtBearerHandler` need to honour this setting. 
+
+So in a nutshell, `IdentityTokenLifetime` makes the id token contains a { "exp" : xxxx } and xxx will be used to set user-to-client cookie's expire time on ClientApp's end when `OpenIdConnectOptions.UseTokenLifetime` is true. While `AccessTokenLifetime` makes identity token contains  a { "exp" : yyyy } where yyy is mainly for idp to recieve and handle requests from Api's  `JwtBearerHandler` based on if the access token has expired
 
 If you set `OpenIdConnectOptions.UseTokenLifetime` to `true` then refresh the page, it still remains signin (if you watch broswer closely, you will see the browser flash a request of `https://localhost:5001/connect/authorize`), why? because of the refresh token behiend the scene
 
 `Client.AbsoluteRefreshTokenLifetime` is default to 30 days.
 
-Q1. But why `AccessTokenLifetime = 10` then refresh still work, you have to close the browser and run app again to see 401 Unauthorized (not 403)
+Note that by default `TokenValidationParameters.ClockSkew = TimeSpan.FromSeconds(300);  // 5 mins`.  `ClockSkew` is the addtional time (safety net) that idp ( as it uses `TokenValidationParameters` to validate access token passed by Api) applies when it comes to validate whether the access token is still valid, it does this to handle small offsets in out-of-sync clock times between the server where your idp live and where the Api server live as IDP and Api can be away from each other in very long distance, it takes time for the request that carries access token to reach to idp
+
+
+```C#
+public static class Config  // IDP
+{
+    // ...
+    public static IEnumerable<Client> Clients =>
+        new Client[]
+        {
+             new Client()
+             {
+                 AccessTokenLifetime = 3 // only valid for 3 second
+             }
+        }
+}
+
+// if you refresh the page, you still can access the Api resource until 5mins passes,if you want access token to expire quick e.g when in testing environment, then you do:
+
+public class Program  // Api
+{
+    public static void Main(string[] args)
+    {
+        // ...
+        builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+            .AddJwtBearer(options =>
+            {
+                options.Authority = "https://localhost:5001";
+                // ...                         
+                options.TokenValidationParameters = new TokenValidationParameters()
+                {                   
+                    // ...
+                    ClockSkew = TimeSpan.FromSeconds(0)  // if you immediately refresh the page after the app starts, you will get 401
+                };
+            });
+    }
+}
+```
+
+Note that for Id token, it is a little bit different, because when Client handles `https://localhost:7184/signin-oidc` which does the back-channel communication with idp to get id token and access token. Since the returned id token is immediately validated to generate the `ClaimsIdentity` which will be baked into cookie, so there is no point to set ClockSkew like:
+
+```c#
+public static class Config  // IDP
+{
+    // ...
+    public static IEnumerable<Client> Clients =>
+        new Client[]
+        {
+             new Client()
+             {
+                 IdentityTokenLifetime = 3 
+             }
+        }
+}
+
+
+public class Program  // Client
+{
+    public static void Main(string[] args)
+    {
+        // ...
+        builder.Services.AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
+        {
+            options.TokenValidationParameters = new TokenValidationParameters()
+            {
+                // ...
+                ClockSkew = TimeSpan.FromSeconds(0)
+            };
+        });
+    }
+}
+```
+
+If you refresh the page, you will still remain as signin (note that the browser won't refresh with `https://localhost:5001/connect/authorize` url), because it takes less than a second for the back-channel communication from client to idp, so there is always a `ClaimsIdentity` created based on the id token (pass validation), then the next request when you refresh the page, the cookie contains the `ClaimsIdentity` will be used, the id token is not needed to be validate again.  If you want to break the authentication process :(  by setting `IdentityTokenLifetime = 0` in idp, you will get "unauthorized_client" error when you start the app, which make senses, the id token is not even valid (because the exp is the same as DateTime.Now when the id token is created) after it is returned by idp for client to validate.
+
+
+If you turn on `options.UseTokenLifetime` as below: 
+
+```C#
+public class Program  // Client
+{
+    public static void Main(string[] args)
+    {
+        // ...
+        builder.Services.AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
+        {
+            options.TokenValidationParameters = new TokenValidationParameters()
+            {
+                // ...
+                ClockSkew = TimeSpan.FromSeconds(0)
+            };
+
+            options.UseTokenLifetime = true;  // <---------------make client to generate user-client cookie with expiration time to be the same as IdentityTokenLifetime
+        });
+    }
+}
+```
+and if you refresh the page, you will still be signin, and this time you will see the browser refresh with `https://localhost:5001/connect/authorize` url every 3 seconds
+behind the scene, every time you refresh the page, it triggers a request of `https://localhost:5001/connect/authorize`, since user still remain login with idp (only user-to-client cookie expires), then idp does the same process as before and return id token and access token to client via backchannel then client forwards those tokens to user
+
+
+**Refresh Token** (a reference typed token, not JWT type token, e.g `5074EFBCAE346907E56AF97FF481CEAE9E97864365F6E8A67C39A22416E34035-1`)
+only get generated when users requests with"offline_access" scope with idp's setting being `AllowOfflineAccess = true`  (check ofa flag). When you use a refresh token to generate a new access token, the lifespan or Time To Live (TTL) of the refresh token **remains the same** as specified in the initial OAuth flow (`AbsoluteRefreshTokenLifetime`), and the new access token has a new TTL of `AccessTokenLifetime`.
+
+The reason why Refresh Token is associated with offline access is that when user-to-idp cookies expires, users normally have to be redirect to the idp's login page to enter credentials again. With refresh token, user doesn't need to login in idp again.
+
+If you make user-to-idp cookie expires very quick as:
+
+```C#
+// idp
+builder.Services.AddIdentityServer(options =>
+{ 
+    options.Authentication.CookieLifetime = TimeSpan.FromSeconds(5);
+    options.Authentication.CookieSlidingExpiration = false;
+})
+```
+
+then client can send a request with Refresh Token to idp so idp can return client with a new access token, id token, and new refresh token as well. Below is an implementation to allow this offline feature:
+
+```C#
+public class BearerTokenHandler : DelegatingHandler  // this is roughly what AddUserAccessTokenHandler does
+{
+    private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IHttpClientFactory _httpClientFactory;
+
+    public BearerTokenHandler(IHttpContextAccessor httpContextAccessor, IHttpClientFactory httpClientFactory)
+    {
+        _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
+        _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var accessToken = await GetAccessTokenAsync();
+
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            request.SetBearerToken(accessToken);
+        }
+
+        return await base.SendAsync(request, cancellationToken);
+    }
+
+    public async Task<string> GetAccessTokenAsync()
+    {
+        // get the expires_at value & parse it
+        var expiresAt = await _httpContextAccessor.HttpContext.GetTokenAsync("expires_at");
+
+        var expiresAtAsDateTimeOffset = DateTimeOffset.Parse(expiresAt, CultureInfo.InvariantCulture);
+
+        if ((expiresAtAsDateTimeOffset.AddSeconds(-60)).ToUniversalTime() > DateTime.UtcNow)
+        {
+            // no need to refresh, return the access token
+            return await _httpContextAccessor.HttpContext.GetTokenAsync(OpenIdConnectParameterNames.AccessToken);
+        }
+
+        var idpClient = _httpClientFactory.CreateClient("IDPClient");
+
+        // get the discovery document
+        var discoveryReponse = await idpClient.GetDiscoveryDocumentAsync();
+
+        // refresh the tokens
+        var refreshToken = await _httpContextAccessor.HttpContext.GetTokenAsync(OpenIdConnectParameterNames.RefreshToken);
+
+        var refreshResponse = await idpClient.RequestRefreshTokenAsync(
+            new RefreshTokenRequest
+            {
+                Address = discoveryReponse.TokenEndpoint,
+                ClientId = "imagegalleryclient",
+                ClientSecret = "secret",
+                RefreshToken = refreshToken
+            });
+
+        // store the tokens             
+        var updatedTokens = new List<AuthenticationToken>();
+        updatedTokens.Add(new AuthenticationToken
+        {
+            Name = OpenIdConnectParameterNames.IdToken,
+            Value = refreshResponse.IdentityToken
+        });
+        updatedTokens.Add(new AuthenticationToken
+        {
+            Name = OpenIdConnectParameterNames.AccessToken,
+            Value = refreshResponse.AccessToken
+        });
+        updatedTokens.Add(new AuthenticationToken
+        {
+            Name = OpenIdConnectParameterNames.RefreshToken,
+            Value = refreshResponse.RefreshToken
+        });
+        updatedTokens.Add(new AuthenticationToken
+        {
+            Name = "expires_at",
+            Value = (DateTime.UtcNow + TimeSpan.FromSeconds(refreshResponse.ExpiresIn)).
+                    ToString("o", CultureInfo.InvariantCulture)
+        });
+
+        // get authenticate result, containing the current principal &  properties
+        var currentAuthenticateResult = await _httpContextAccessor.HttpContext.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+        // store the updated tokens
+        currentAuthenticateResult.Properties.StoreTokens(updatedTokens);
+
+        // sign in
+        await _httpContextAccessor.HttpContext.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            currentAuthenticateResult.Principal,
+            currentAuthenticateResult.Properties);
+
+        return refreshResponse.AccessToken;
+    }
+}
+```
+
+note that this "offline feature" implementation check whether an access token is expired/about to expire **before** sending the request with access token to Api, it is **not** something like send request with expired access token to Api first then retry
+
 =========================================================================
 Before `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`  (check jcm flag)
 
@@ -641,6 +860,8 @@ public class ApiResource : Resource
 
 ===================================================================================================================================
 
+## Full Sample Code
+
 ```C#
 //--------------------------------V IdentityServer runs on https://localhost:5001
 public class IdentityServerProgram
@@ -651,14 +872,21 @@ public class IdentityServerProgram
 
         builder.Services.AddRazorPages();
 
-        builder.Services
-            .AddIdentityServer()
-            .AddInMemoryIdentityResources(Config.IdentityResources)
-            .AddInMemoryApiScopes(Config.ApiScopes)
-            .AddInMemoryClients(Config.Clients)
-            .AddTestUsers(TestUsers.Users);
+        builder.Services.AddIdentityServer(options => 
+        {
+            options.EmitStaticAudienceClaim = true;
+
+            //options.Authentication.CookieLifetime = TimeSpan.FromSeconds(5);
+            //options.Authentication.CookieSlidingExpiration = false;
+        })
+        .AddInMemoryIdentityResources(Config.IdentityResources)
+        .AddInMemoryApiScopes(Config.ApiScopes)
+        .AddInMemoryClients(Config.Clients)
+        .AddTestUsers(TestUsers.Users);
 
         var app = builder.Build();
+
+        app.UseStaticFiles();
 
         app.UseRouting();
 
@@ -672,64 +900,115 @@ public class IdentityServerProgram
     }
 }
 
-public static class Config
+public static class Config  // we can say IdentityResource is for id token while ApiResource is for access token
 {
-    public static IEnumerable<IdentityResource> IdentityResources =>
-        new IdentityResource[]
+    /* 
+      public IdentityResource(string name, string displayName, IEnumerable<string> userClaims)
+    */
+    public static IEnumerable<IdentityResource> IdentityResources =>  // IdentityResource/s is used for idp's userinfo endpoint     
+        new IdentityResource[]                                        // IdentityResource's Name will be scope name
         { 
-            new IdentityResources.OpenId(),  // subject id
+            new IdentityResources.OpenId(),
             new IdentityResources.Profile(),
-            new IdentityResource()
+            new IdentityResource(
+                "roles",  // <-------------"roles" scope, need to match AllowedScopes in Clients
+                "Your role(s)",  
+                new [] { "role" }), // <------means when user requires "roles" scope, idp needs to return "role" (in the string array) claim
+                                    // but still id token won't contain this "role claim", it's idp's Userinfo endpoint returns userClaims (in JsonDocument fomat) like role claim (given that options.GetClaimsFromUserInfoEndpoint = true)
+                                    // so that user-to-client cookie (AuthenticateTicket, reside on user's end) will contains role claims (pass to client via cookie)
+           
+            new IdentityResource(
+                "country", 
+                "The country you're living in",
+                new [] { "country" })
+        };      
+
+    public static IEnumerable<ApiResource> ApiResources =>  // note that once one of the scope is "clicked" by user, the corresponding ApiResource.Name will be in the aud
+        new ApiResource[]
+        {
+            new ApiResource("imagegalleryapi", "Image Gallery API", new [] { "role", "country" })  // role here results the access token to contains a role claim such as { "role" : "payinguser" }
+            { 
+                Scopes = { "imagegalleryapi.fullaccess", "imagegalleryapi.read", "imagegalleryapi.write" },   // public ICollection<string> Scopes { get; set; } = new HashSet<string>();
+                ApiSecrets = { new Secret("apisecret".Sha256()) }
+            },
+            
+            new ApiResource("OtherResource", "other resource")
             {
-                Name = "verification",
-                UserClaims = new List<string>
-                {
-                    JwtClaimTypes.Email,
-                    JwtClaimTypes.EmailVerified
-                }
-            }
+                Scopes = { "other.fullaccess" }
+            },
+
+            /*  ApiResource in audience claim list, API scope in scopes claim list, check idpaud flag to see how "aud" is generated
+             {
+               ...,
+               "aud": [ 
+                 "imagegalleryapi",      //*V we have two ApiResource in place, that's why there are two entities (actually three) in "aud"
+                 "OtherResource",        //*Ʌ
+                 "https://localhost:5001/resources" // the reason that the idp itself in also in the "aud" because access token is needed for client to call UserInfo endpoint
+               ],                                   // which makes the idp itself is also an "consumer" of the access token, that's why idp is in the "aud"
+               "scopes": [ 
+                 "openid",
+                 "profile",
+                 "imagegalleryapi.fullaccess",
+                 "other.fullaccess",
+                 "roles"
+               ]
+             }
+            */   
         };
 
     public static IEnumerable<ApiScope> ApiScopes =>
-        new List<ApiScope>
-        { 
-            new ApiScope("api1", "My API")
+        new ApiScope[]
+        {
+            new ApiScope("imagegalleryapi.fullaccess"),
+            new ApiScope("imagegalleryapi.read"),
+            new ApiScope("imagegalleryapi.write"),
+            new ApiScope("other.fullaccess"),
         };
 
-    public static IEnumerable<Client> Clients =>
-        new List<Client>
-        { 
-            new Client  // machine to machine client (from quickstart 1)
+    public static IEnumerable<Client> Clients => 
+        new Client[] 
+        {
+            new Client()
             {
-                ClientId = "client",                                          
-                ClientSecrets = {
-                    new Secret("secret".Sha256())
-                },
-
-                AllowedGrantTypes = GrantTypes.ClientCredentials,
-
-                // scopes that client has access to
-                AllowedScopes = { "api1" }
-            },
-            // interactive ASP.NET Core Web App
-            new Client
-            {
-                ClientId = "web",
-                ClientSecrets = { new Secret("secret".Sha256()) },
-
+                ClientName = "Image Gallery",
+                ClientId = "imagegalleryclient",
                 AllowedGrantTypes = GrantTypes.Code,
+                AccessTokenType = AccessTokenType.Reference,  // default is AccessTokenType.Jwt
+                AllowOfflineAccess = true,
+                UpdateAccessTokenClaimsOnRefresh = true,
+                //RefreshTokenExpiration =  // default is TokenExpiration.Absolute (controlled by AbsoluteRefreshTokenLifetime), if change to TokenExpiration.Sliding, controlled by SlidingRefreshTokenLifetime
+                //AbsoluteRefreshTokenLifetime = 12, // default is 30 days
+                //SlidingRefreshTokenLifetime =  // default is 15 days, refer to https://github.com/IdentityServer/IdentityServer3/issues/2411#issuecomment-171483658
+                //AuthoriztionCodeLifetime = ...
+                //IdentityTokenLifetime = 3, // default is 5 mins
+                AccessTokenLifetime = 3,   // default is 1 hour
 
-                // where to redirect to after login
-                RedirectUris = { "https://localhost:5002/signin-oidc" },
-                // where to redirect to after logout
-                PostLogoutRedirectUris = { "https://localhost:5002/signout-callback-oidc" },
-
-                AllowedScopes =
+                //UpdateAccessTokenClaimsOnRefresh = true,
+                RedirectUris =
+                {
+                    "https://localhost:7184/signin-oidc"
+                },
+                PostLogoutRedirectUris =
+                {
+                    "https://localhost:7184/signout-callback-oidc"
+                },
+                AllowedScopes = 
                 {
                     IdentityServerConstants.StandardScopes.OpenId,
                     IdentityServerConstants.StandardScopes.Profile,
-                    "verification"
-                }
+                    "roles",
+                    //"imagegalleryapi.fullaccess",
+                    "imagegalleryapi.read",
+                    "imagegalleryapi.write",
+                    "country",
+                    "other.fullaccess",
+                    "non-exist"  // it is ok, won't throw exception, which means that AllowedScopes doesn't control what scopes to be displayed to client
+                },
+                ClientSecrets =
+                {
+                    new Secret("secret".Sha256())
+                },
+                RequireConsent = true
             }
         };
 }
@@ -737,45 +1016,185 @@ public static class Config
 ```
 
 ```C#
+//------------------------V Client(RP) runs on https://localhost:7184
+public class ClientProgram 
+{
+    public static void Main(string[] args)
+    {
+        var builder = WebApplication.CreateBuilder(args);
+
+        // Add services to the container.
+        builder.Services.AddControllersWithViews()
+            .AddJsonOptions(configure =>
+                configure.JsonSerializerOptions.PropertyNamingPolicy = null);
+
+        builder.Services.AddAccessTokenManagement();  // from IdentityModel.AspNetCore, so that you don't need to write custom DelegatingHandler to pass access token in named HttpClient
+
+        //--------------------------------------------------------------V
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddTransient<BearerTokenHandler>();
+
+        builder.Services.AddHttpClient("IDPClient", client =>
+        {
+            client.BaseAddress = new Uri("https://localhost:5001/");
+            client.DefaultRequestHeaders.Clear();
+            client.DefaultRequestHeaders.Add(HeaderNames.Accept, "application/json");
+        });
+
+        // create an HttpClient used for accessing the API
+        builder.Services.AddHttpClient("APIClient", client =>
+        {
+            client.BaseAddress = new Uri(builder.Configuration["ImageGalleryAPIRoot"]);   // Api https://localhost:7075
+            client.DefaultRequestHeaders.Clear();
+            client.DefaultRequestHeaders.Add(HeaderNames.Accept, "application/json");
+        })
+        //.AddHttpMessageHandler<BearerTokenHandler>();
+        .AddUserAccessTokenHandler();
+        // third party DelegatingHandlerlike BearerTokenHandler to pass access token via HTTP request in APIClient, so you don't need to write one
+        // note that access token is retrieved from AuthenticationTicket.AuthenticationProperties, check o4.3 flag, that's why AddCookie is needed
+        // also note that AddUserAccessTokenHandler() also automatically refresh access token when it is about to expire or when it has expired, it is like BearerTokenHandler 
+        // if you wonder how AddUserAccessTokenHandler knows the address of idp, it is from DefaultTokenClientConfigurationService which uses OpenIdConnectOptions.ConfigurationManager
+        // https://github.com/IdentityModel/IdentityModel.AspNetCore/blob/72479bf781eac07b5f7f568ae45e498b5ba9ed69/src/AccessTokenManagement/DefaultTokenClientConfigurationService.cs#L186
+        //--------------------------------------------------------------Ʌ
+
+        JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear();  // check jcm flag
+
+        builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+            options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
+        })
+        .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
+        {
+            options.AccessDeniedPath = "/Authentication/AccessDenied";
+        })
+        .AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
+        {
+            options.SignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+            options.Authority = "https://localhost:5001/";
+            options.ClientId = "imagegalleryclient";
+            options.ClientSecret = "secret";
+            options.ResponseType = "code";
+            
+            //----------------------------->> used by default
+            //options.Scope.Add("openid");   
+            //options.Scope.Add("profile");
+            //options.CallbackPath = new PathString("signin-oidc");
+            //-----------------------------<<
+
+            // SignedOutCallbackPath must match with PostLogoutRedirectUris at IDP client config
+            // if you want to automatically return to the application after logging out of IdentityServer.
+            //options.SignedOutCallbackPath = new PathString("signout-callback-oidc");  // default
+
+            options.SaveTokens = true;
+            options.GetClaimsFromUserInfoEndpoint = true;  // o4.6 in OpenIdConnectHandler, this is the prerequisite for options.ClaimActions.MapJsonKey("role", "role") below
+
+            // this is to ask to include aud claim, the name is confusing, you call Remove to include something but it is what it is,
+            // bechind the scene, "Remove" removes the filter DeleteClaimAction, check oica flag in OpenIdConnectOptions
+            options.ClaimActions.Remove("aud");
+
+            options.ClaimActions.DeleteClaim("sid");
+            options.ClaimActions.DeleteClaim("idp");
+
+            //----------------------------------------------V add a Role scope 
+            options.Scope.Add("roles");
+            /* public static void MapJsonKey(this ClaimActionCollection collection, string claimType, string jsonKey)
+               check mjku flag you'll see why it is needed when GetClaimsFromUserInfoEndpoint is set to true
+               because UserInfo endpoint on IDP will return user info as JsonDocument
+            */
+            options.ClaimActions.MapJsonKey("role", "role");
+            //----------------------------------------------Ʌ
+
+            //options.Scope.Add("imagegalleryapi.fullaccess"); // when this scope is requested by user, idp will locate the ApiResource name (imagegalleryapi)
+                                                             // this scope, so the generated access token will contain a token that contains "aud": [ "imagegalleryapi" ]
+            options.Scope.Add("imagegalleryapi.read");
+            options.Scope.Add("imagegalleryapi.write");
+
+            options.Scope.Add("country");
+            options.Scope.Add("offline_access");
+            options.ClaimActions.MapUniqueJsonKey("country", "country");
+
+            options.Scope.Add("other.fullaccess");
+
+            // it will affect how JsonWebTokenHandler generate ClaimsIdentity, epsecially on ClaimsIdentity.RoleClaimTypethis
+            options.TokenValidationParameters = new TokenValidationParameters()
+            {
+                NameClaimType = "give_name",
+                RoleClaimType = "role",  // set ClaimsIdentity.RoleClaimTypethis setting. It is requred as it affect `User.IsInRole("PayingUser")` in the view model
+
+                ClockSkew = TimeSpan.FromSeconds(0)
+            };
+            options.UseTokenLifetime = true;  // only assoicate with idp's IdentityTokenLifetime
+        });
+
+        // ...
+
+        var app = builder.Build();
+
+        app.UseStaticFiles();
+
+        app.UseRouting();
+
+        app.UseAuthentication();
+
+        app.UseAuthorization();
+
+        app.MapControllerRoute(name: "default", pattern: "{controller=Gallery}/{action=Index}/{id?}");
+        
+        app.Run();
+    }
+}
+//------------------------Ʌ Client
+```
+
+```C#
 //----------------------V Api
-public class ApiProgram   // runs on port 6001
+public class ApiProgram  // Api runs on https://localhost:7075
 {
     public static void Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
         builder.Services.AddControllers();
-        builder.Services.AddEndpointsApiExplorer();
-        builder.Services.AddSwaggerGen();
+        // ...
 
-        builder.Services
-            .AddAuthentication("Bearer")
-            .AddJwtBearer("Bearer", options =>
+        JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear();  // check jcm flag
+
+        builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)  // <--------------------------
+            .AddJwtBearer(options =>
             {
-                options.Authority = "https://localhost:5001";  // IdentityServer runs on 5001
-
-                options.TokenValidationParameters = new TokenValidationParameters
+                options.Authority = "https://localhost:5001";
+                options.Audience = "imagegalleryapi";  // <----------to validate whether the passed access token contains "aud" claim whose value should be "imagegalleryapi"
+                options.TokenValidationParameters = new TokenValidationParameters()
                 {
-                    ValidateAudience = false
+                    NameClaimType = "given_name",
+                    RoleClaimType = "role",
+                    ValidTypes = new[] { "at+jwt" },  // quite new setting, to avoid arbitary token with HMAC attack, no need to know in details                
+
+                    ClockSkew = TimeSpan.FromSeconds(0)
                 };
             });
 
-        builder.Services.AddAuthorization(options =>
+        builder.Services.AddAuthorization(opts =>
         {
-            options.AddPolicy("ApiScope", policy =>
+            opts.AddPolicy("ClientApplicationCanWrite", policyBuilder =>
             {
-                policy.RequireAuthenticatedUser();
-                policy.RequireClaim("scope", "api1");
+                policyBuilder.RequireClaim("scope", "imagegalleryapi.write");
             });
+            // ...
         });
 
         var app = builder.Build();
 
+        app.UseHttpsRedirection();
+
+        app.UseStaticFiles();
+
         app.UseAuthentication();
+
         app.UseAuthorization();
 
-        app.MapGet("identity", (ClaimsPrincipal user) => user.Claims.Select(c => new { c.Type, c.Value }))
-            .RequireAuthorization("ApiScope");  // ApiScope is the policy name
+        app.MapControllers();
 
         app.Run();
     }

@@ -2660,7 +2660,7 @@ public class TokenResponseGenerator : ITokenResponseGenerator
  
         if (request.AuthorizationCode != null)
         {
-            createRefreshToken = request.AuthorizationCode.RequestedScopes.Contains(IdentityServerConstants.StandardScopes.OfflineAccess);
+            createRefreshToken = request.AuthorizationCode.RequestedScopes.Contains(IdentityServerConstants.StandardScopes.OfflineAccess);  // <----------------ofa
  
             // load the client that belongs to the authorization code
             Client client = null;
@@ -3730,13 +3730,100 @@ internal class TokenRequestValidator : ITokenRequestValidator
         return Valid();
     }
 
-    private async Task<TokenRequestValidationResult> ValidateDeviceCodeRequestAsync(NameValueCollection parameters);
-    private async Task<TokenRequestValidationResult> ValidateCibaRequestRequestAsync(NameValueCollection parameters);
-    private async Task<TokenRequestValidationResult> ValidateExtensionGrantRequestAsync(NameValueCollection parameters); 
-    private async Task<string> ValidateRequestedScopesAndResourcesAsync(NameValueCollection parameters, bool ignoreImplicitIdentityScopes = false, bool ignoreImplicitOfflineAccess = false);
-    private TokenRequestValidationResult ValidateAuthorizationCodeWithProofKeyParameters(string codeVerifier, AuthorizationCode authZcode);
-    private bool ValidateCodeVerifierAgainstCodeChallenge(string codeVerifier, string codeChallenge, string codeChallengeMethod);
-    
+    private async Task<string> ValidateRequestedScopesAndResourcesAsync(NameValueCollection parameters, bool ignoreImplicitIdentityScopes = false, bool ignoreImplicitOfflineAccess = false)
+    {
+        var scopes = parameters.Get(OidcConstants.TokenRequest.Scope);
+        if (scopes.IsMissing())
+        {
+            _logger.LogTrace("Client provided no scopes - checking allowed scopes list");
+
+            if (!IEnumerableExtensions.IsNullOrEmpty(_validatedRequest.Client.AllowedScopes))
+            {
+                // this finds all the scopes the client is allowed to access
+                var clientAllowedScopes = new List<string>();
+                if (!ignoreImplicitIdentityScopes)
+                {
+                    var resources = await _resourceStore.FindResourcesByScopeAsync(_validatedRequest.Client.AllowedScopes);
+                    clientAllowedScopes.AddRange(resources.ToScopeNames().Where(x => _validatedRequest.Client.AllowedScopes.Contains(x)));
+                }
+                else
+                {
+                    var apiScopes = await _resourceStore.FindApiScopesByNameAsync(_validatedRequest.Client.AllowedScopes);
+                    clientAllowedScopes.AddRange(apiScopes.Select(x => x.Name));
+                }
+
+                if (!ignoreImplicitOfflineAccess)
+                {
+                    if (_validatedRequest.Client.AllowOfflineAccess)
+                    {
+                        clientAllowedScopes.Add(IdentityServerConstants.StandardScopes.OfflineAccess);
+                    }
+                }
+
+                scopes = clientAllowedScopes.Distinct().ToSpaceSeparatedString();
+                _logger.LogTrace("Defaulting to: {scopes}", scopes);
+            }
+            else
+            {
+                LogError("No allowed scopes configured for client", new { clientId = _validatedRequest.Client.ClientId });
+                return OidcConstants.TokenErrors.InvalidScope;
+            }
+        }
+
+        if (scopes.Length > _options.InputLengthRestrictions.Scope)
+        {
+            LogError("Scope parameter exceeds max allowed length");
+            return OidcConstants.TokenErrors.InvalidScope;
+        }
+
+        var requestedScopes = scopes.ParseScopesString();
+
+        if (requestedScopes == null)
+        {
+            LogError("No scopes found in request");
+            return OidcConstants.TokenErrors.InvalidScope;
+        }
+
+
+        var resourceIndicators = _validatedRequest.RequestedResourceIndicator == null ?
+            Enumerable.Empty<string>() :
+            new[] { _validatedRequest.RequestedResourceIndicator };
+
+        var resourceValidationResult = await _resourceValidator.ValidateRequestedResourcesAsync(new ResourceValidationRequest
+        {
+            Client = _validatedRequest.Client,
+            Scopes = requestedScopes,
+            ResourceIndicators = resourceIndicators,
+        });
+
+        if (!resourceValidationResult.Succeeded)
+        {
+            if (resourceValidationResult.InvalidResourceIndicators.Any())
+            {
+                LogError("Invalid resource indicator");
+                return OidcConstants.TokenErrors.InvalidTarget;
+            }
+
+            if (resourceValidationResult.InvalidScopes.Any())
+            {
+                LogError("Invalid scopes requested");
+            }
+            else
+            {
+                LogError("Invalid scopes for client requested");
+            }
+
+            return OidcConstants.TokenErrors.InvalidScope;
+        }
+
+        _validatedRequest.RequestedScopes = requestedScopes;
+
+        IdentityServerLicenseValidator.Instance.ValidateResourceIndicators(_validatedRequest.RequestedResourceIndicator);
+        _validatedRequest.ValidatedResources = resourceValidationResult.FilterByResourceIndicator(_validatedRequest.RequestedResourceIndicator);
+
+        return null;
+    }
+
     private TokenRequestValidationResult Valid(Dictionary<string, object> customResponse = null)
     {
         return new TokenRequestValidationResult(_validatedRequest, customResponse);
@@ -3746,10 +3833,244 @@ internal class TokenRequestValidator : ITokenRequestValidator
     {
         return new TokenRequestValidationResult(_validatedRequest, error, errorDescription, customResponse);
     }
-
+  
+    private async Task<TokenRequestValidationResult> ValidateDeviceCodeRequestAsync(NameValueCollection parameters);
+    private async Task<TokenRequestValidationResult> ValidateCibaRequestRequestAsync(NameValueCollection parameters);
+    private async Task<TokenRequestValidationResult> ValidateExtensionGrantRequestAsync(NameValueCollection parameters); 
+    private TokenRequestValidationResult ValidateAuthorizationCodeWithProofKeyParameters(string codeVerifier, AuthorizationCode authZcode);
+    private bool ValidateCodeVerifierAgainstCodeChallenge(string codeVerifier, string codeChallenge, string codeChallengeMethod); 
     // ...
 }
 //----------------------------------Ʌ
+```
+
+```C#
+//-------------------------------------V
+public class DefaultRefreshTokenService : IRefreshTokenService
+{
+    protected readonly ILogger Logger;
+    protected IRefreshTokenStore RefreshTokenStore { get; }
+    protected IProfileService Profile { get; }
+    protected IClock Clock { get; }
+    protected PersistentGrantOptions Options { get; }
+
+    public DefaultRefreshTokenService(
+        IRefreshTokenStore refreshTokenStore, 
+        IProfileService profile,
+        IClock clock,
+        PersistentGrantOptions options,
+        ILogger<DefaultRefreshTokenService> logger)
+    {
+        // ...
+    }
+
+    public virtual async Task<TokenValidationResult> ValidateRefreshTokenAsync(string tokenHandle, Client client)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultRefreshTokenService.ValidateRefreshToken");
+        
+        var invalidGrant = new TokenValidationResult
+        {
+            IsError = true, Error = OidcConstants.TokenErrors.InvalidGrant
+        };
+
+        Logger.LogTrace("Start refresh token validation");
+
+        // check if refresh token is valid
+        var refreshToken = await RefreshTokenStore.GetRefreshTokenAsync(tokenHandle);
+        if (refreshToken == null)
+        {
+            Logger.LogWarning("Invalid refresh token");
+            return invalidGrant;
+        }
+
+        // check if refresh token has expired
+        if (refreshToken.CreationTime.HasExceeded(refreshToken.Lifetime, Clock.UtcNow.UtcDateTime))
+        {
+            Logger.LogWarning("Refresh token has expired.");
+            return invalidGrant;
+        }
+            
+        // check if client belongs to requested refresh token
+        if (client.ClientId != refreshToken.ClientId)
+        {
+            Logger.LogError("{0} tries to refresh token belonging to {1}", client.ClientId, refreshToken.ClientId);
+            return invalidGrant;
+        }
+
+        // check if client still has offline_access scope
+        if (!client.AllowOfflineAccess)
+        {
+            Logger.LogError("{clientId} does not have access to offline_access scope anymore", client.ClientId);
+            return invalidGrant;
+        }
+            
+        // check if refresh token has been consumed
+        if (refreshToken.ConsumedTime.HasValue)
+        {
+            if ((await AcceptConsumedTokenAsync(refreshToken)) == false)
+            {
+                Logger.LogWarning("Rejecting refresh token because it has been consumed already.");
+                return invalidGrant;
+            }
+        }
+            
+        // make sure user is enabled
+        var isActiveCtx = new IsActiveContext(
+            refreshToken.Subject,
+            client,
+            IdentityServerConstants.ProfileIsActiveCallers.RefreshTokenValidation);
+
+        await Profile.IsActiveAsync(isActiveCtx);
+
+        if (isActiveCtx.IsActive == false)
+        {
+            Logger.LogError("{subjectId} has been disabled", refreshToken.Subject.GetSubjectId());
+            return invalidGrant;
+        }
+            
+        return new TokenValidationResult
+        {
+            IsError = false, 
+            RefreshToken = refreshToken, 
+            Client = client
+        };
+    }
+
+    protected virtual Task<bool> AcceptConsumedTokenAsync(RefreshToken refreshToken)
+    {
+        // by default we will not accept consumed tokens change the behavior here to implement a time window you can also implement additional revocation logic here
+        return Task.FromResult(false);
+    }
+
+    public virtual async Task<string> CreateRefreshTokenAsync(RefreshTokenCreationRequest request)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultRefreshTokenService.CreateRefreshToken");
+        
+        Logger.LogDebug("Creating refresh token");
+
+        int lifetime;
+        if (request.Client.RefreshTokenExpiration == TokenExpiration.Absolute)
+        {
+            Logger.LogDebug("Setting an absolute lifetime: {absoluteLifetime}",
+                request.Client.AbsoluteRefreshTokenLifetime);
+            lifetime = request.Client.AbsoluteRefreshTokenLifetime;
+        }
+        else
+        {
+            lifetime = request.Client.SlidingRefreshTokenLifetime;
+            if (request.Client.AbsoluteRefreshTokenLifetime > 0 && lifetime > request.Client.AbsoluteRefreshTokenLifetime)
+            {
+                Logger.LogWarning(
+                    "Client {clientId}'s configured " + nameof(request.Client.SlidingRefreshTokenLifetime) +
+                    " of {slidingLifetime} exceeds its " + nameof(request.Client.AbsoluteRefreshTokenLifetime) +
+                    " of {absoluteLifetime}. The refresh_token's sliding lifetime will be capped to the absolute lifetime",
+                    request.Client.ClientId, lifetime, request.Client.AbsoluteRefreshTokenLifetime);
+                lifetime = request.Client.AbsoluteRefreshTokenLifetime;
+            }
+
+            Logger.LogDebug("Setting a sliding lifetime: {slidingLifetime}", lifetime);
+        }
+
+        var refreshToken = new RefreshToken
+        {
+            Subject = request.Subject,
+            SessionId = request.AccessToken.SessionId,
+            ClientId = request.Client.ClientId,
+            Description = request.Description,
+            AuthorizedScopes = request.AuthorizedScopes,
+            AuthorizedResourceIndicators = request.AuthorizedResourceIndicators,
+            ProofType = request.ProofType,
+
+            CreationTime = Clock.UtcNow.UtcDateTime,
+            Lifetime = lifetime,
+        };
+        refreshToken.SetAccessToken(request.AccessToken, request.RequestedResourceIndicator);
+
+        var handle = await RefreshTokenStore.StoreRefreshTokenAsync(refreshToken);
+        return handle;
+    }
+
+    public virtual async Task<string> UpdateRefreshTokenAsync(RefreshTokenUpdateRequest request)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultTokenCreationService.UpdateRefreshToken");
+        
+        Logger.LogDebug("Updating refresh token");
+
+        var handle = request.Handle;
+        bool needsCreate = false;
+        bool needsUpdate = request.MustUpdate;
+
+        if (request.Client.RefreshTokenUsage == TokenUsage.OneTimeOnly)
+        {
+
+            if(Options.DeleteOneTimeOnlyRefreshTokensOnUse)
+            {
+                Logger.LogDebug("Token usage is one-time only and refresh behavior is delete. Deleting current handle, and generating new handle");
+
+                await RefreshTokenStore.RemoveRefreshTokenAsync(handle);
+            } 
+            else
+            {
+                Logger.LogDebug("Token usage is one-time only and refresh behavior is mark as consumed. Setting current handle as consumed, and generating new handle");
+                
+                // flag as consumed
+                if (request.RefreshToken.ConsumedTime == null)
+                {
+                    request.RefreshToken.ConsumedTime = Clock.UtcNow.UtcDateTime;
+                    await RefreshTokenStore.UpdateRefreshTokenAsync(handle, request.RefreshToken);
+                }
+            }
+
+            // create new one
+            needsCreate = true;
+        }
+
+        if (request.Client.RefreshTokenExpiration == TokenExpiration.Sliding)
+        {
+            Logger.LogDebug("Refresh token expiration is sliding - extending lifetime");
+
+            // if absolute exp > 0, make sure we don't exceed absolute exp
+            // if absolute exp = 0, allow indefinite slide
+            var currentLifetime = request.RefreshToken.CreationTime.GetLifetimeInSeconds(Clock.UtcNow.UtcDateTime);
+            Logger.LogDebug("Current lifetime: {currentLifetime}", currentLifetime.ToString());
+
+            var newLifetime = currentLifetime + request.Client.SlidingRefreshTokenLifetime;
+            Logger.LogDebug("New lifetime: {slidingLifetime}", newLifetime.ToString());
+
+            // zero absolute refresh token lifetime represents unbounded absolute lifetime
+            // if absolute lifetime > 0, cap at absolute lifetime
+            if (request.Client.AbsoluteRefreshTokenLifetime > 0 && newLifetime > request.Client.AbsoluteRefreshTokenLifetime)
+            {
+                newLifetime = request.Client.AbsoluteRefreshTokenLifetime;
+                Logger.LogDebug("New lifetime exceeds absolute lifetime, capping it to {newLifetime}",
+                    newLifetime.ToString());
+            }
+
+            request.RefreshToken.Lifetime = newLifetime;
+            needsUpdate = true;
+        }
+
+        if (needsCreate)
+        {
+            // set it to null so that we save non-consumed token
+            request.RefreshToken.ConsumedTime = null;
+            handle = await RefreshTokenStore.StoreRefreshTokenAsync(request.RefreshToken);
+            Logger.LogDebug("Created refresh token in store");
+        }
+        else if (needsUpdate)
+        {
+            await RefreshTokenStore.UpdateRefreshTokenAsync(handle, request.RefreshToken);
+            Logger.LogDebug("Updated refresh token in store");
+        }
+        else
+        {
+            Logger.LogDebug("No updates to refresh token done");
+        }
+
+        return handle;
+    }
+}
+//-------------------------------------Ʌ
 ```
 
 ```C#
@@ -4026,7 +4347,7 @@ public class DefaultProfileService : IProfileService
 }
 //--------------------------------Ʌ
 
-//---------------------------------V
+//---------------------------------V a wrapper of "TestUserStore"/"XXXUserStore"?
 public class TestUserProfileService : IProfileService
 {
     protected readonly ILogger Logger;
@@ -4432,6 +4753,138 @@ public abstract class EndpointResult<T> : IEndpointResult where T : class, IEndp
 }
 //-------------------------------------Ʌ
 ```
+
+```C#
+//--------------------------------V
+public class DefaultConsentService : IConsentService
+{
+    protected readonly IUserConsentStore UserConsentStore;
+    protected readonly IClock Clock;
+    protected readonly ILogger<DefaultConsentService> Logger;
+
+    public DefaultConsentService(IClock clock, IUserConsentStore userConsentStore, ILogger<DefaultConsentService> logger)
+    {
+        // ...
+    }
+
+    public virtual async Task<bool> RequiresConsentAsync(ClaimsPrincipal subject, Client client, IEnumerable<ParsedScopeValue> parsedScopes)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultConsentService.RequiresConsent");
+        
+        if (client == null) throw new ArgumentNullException(nameof(client));
+        if (subject == null) throw new ArgumentNullException(nameof(subject));
+
+        if (!client.RequireConsent)
+        {
+            Logger.LogDebug("Client is configured to not require consent, no consent is required");
+            return false;
+        }
+
+        if (parsedScopes == null || !parsedScopes.Any())
+        {
+            Logger.LogDebug("No scopes being requested, no consent is required");
+            return false;
+        }
+
+        if (!client.AllowRememberConsent)
+        {
+            Logger.LogDebug("Client is configured to not allow remembering consent, consent is required");
+            return true;
+        }
+            
+        if (parsedScopes.Any(x => x.ParsedName != x.RawValue))
+        {
+            Logger.LogDebug("Scopes contains parameterized values, consent is required");
+            return true;
+        }
+
+        var scopes = parsedScopes.Select(x => x.RawValue).ToArray();
+
+        // we always require consent for offline access if
+        // the client has not disabled RequireConsent 
+        if (scopes.Contains(IdentityServerConstants.StandardScopes.OfflineAccess))
+        {
+            Logger.LogDebug("Scopes contains offline_access, consent is required");
+            return true;
+        }
+
+        var consent = await UserConsentStore.GetUserConsentAsync(subject.GetSubjectId(), client.ClientId);
+
+        if (consent == null)
+        {
+            Logger.LogDebug("Found no prior consent from consent store, consent is required");
+            return true;
+        }
+
+        if (consent.Expiration.HasExpired(Clock.UtcNow.UtcDateTime))
+        {
+            Logger.LogDebug("Consent found in consent store is expired, consent is required");
+            await UserConsentStore.RemoveUserConsentAsync(consent.SubjectId, consent.ClientId);
+            return true;
+        }
+
+        if (consent.Scopes != null)
+        {
+            var intersect = scopes.Intersect(consent.Scopes);
+            var different = scopes.Count() != intersect.Count();
+
+            if (different)
+            {
+                Logger.LogDebug("Consent found in consent store is different than current request, consent is required");
+            }
+            else
+            {
+                Logger.LogDebug("Consent found in consent store is same as current request, consent is not required");
+            }
+
+            return different;
+        }
+
+        Logger.LogDebug("Consent found in consent store has no scopes, consent is required");
+
+        return true;
+    }
+
+    public virtual async Task UpdateConsentAsync(ClaimsPrincipal subject, Client client, IEnumerable<ParsedScopeValue> parsedScopes)
+    {       
+        if (client.AllowRememberConsent)
+        {
+            var subjectId = subject.GetSubjectId();
+            var clientId = client.ClientId;
+
+            var scopes = parsedScopes?.Select(x => x.RawValue).ToArray();
+            if (scopes != null && scopes.Any())
+            {
+                Logger.LogDebug("Client allows remembering consent, and consent given. Updating consent store for subject: {subject}", subject.GetSubjectId());
+
+                var consent = new Consent
+                {
+                    CreationTime = Clock.UtcNow.UtcDateTime,
+                    SubjectId = subjectId,
+                    ClientId = clientId,
+                    Scopes = scopes
+                };
+
+                if (client.ConsentLifetime.HasValue)
+                {
+                    consent.Expiration = consent.CreationTime.AddSeconds(client.ConsentLifetime.Value);
+                }
+
+                await UserConsentStore.StoreUserConsentAsync(consent);
+            }
+            else
+            {
+                Logger.LogDebug("Client allows remembering consent, and no scopes provided. Removing consent from consent store for subject: {subject}", subject.GetSubjectId());
+
+                await UserConsentStore.RemoveUserConsentAsync(subjectId, clientId);
+            }
+        }
+    }
+}
+//--------------------------------Ʌ
+```
+
+
 
 ## Razor Page (created by template)
 

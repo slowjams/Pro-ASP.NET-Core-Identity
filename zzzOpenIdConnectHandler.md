@@ -1246,7 +1246,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             DateTimeOffset dateTimeOffset = base.Clock.UtcNow + TimeSpan.FromSeconds(result);
             list.Add(new AuthenticationToken
             {
-                Name = "expires_at",
+                Name = "expires_at",  // <---------------------------------------expires_at is for access token only, as message.ExpiresIn is created by idp based on access token
                 Value = dateTimeOffset.ToString("o", CultureInfo.InvariantCulture)
             });
         }
@@ -2786,7 +2786,7 @@ public class JwtSecurityTokenHandler : SecurityTokenHandler
 }
 //----------------------------------Ʌ
 
-//------------------------------------V
+//------------------------------------V Microsoft.IdentityModel.Tokens
 public class TokenValidationParameters
 {
     private string _authenticationType;
@@ -2795,8 +2795,9 @@ public class TokenValidationParameters
     private string _roleClaimType = ClaimsIdentity.DefaultRoleClaimType;
     private Dictionary<string, object> _instancePropertyBag;
 
-    public static readonly string DefaultAuthenticationType = "AuthenticationTypes.Federation"; // Note: The change was because 5.x removed the dependency on System.IdentityModel and we used a different string which was a mistake.
-    public static readonly TimeSpan DefaultClockSkew = TimeSpan.FromSeconds(300); // 5 min.
+    // Note: The change was because 5.x removed the dependency on System.IdentityModel and we used a different string which was a mistake.
+    public static readonly string DefaultAuthenticationType = "AuthenticationTypes.Federation"; 
+    public static readonly TimeSpan DefaultClockSkew = TimeSpan.FromSeconds(300); // <------------------------default is 5 min
     public const Int32 DefaultMaximumTokenSizeInBytes = 1024 * 250;
 
     protected TokenValidationParameters(TokenValidationParameters other)
