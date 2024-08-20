@@ -1867,9 +1867,9 @@ public class HttpDocumentRetriever : IDocumentRetriever
 
     public bool RequireHttps { get; set; } = true;
 
-    public async Task<string> GetDocumentAsync(string address, CancellationToken cancel)
-    {       
-        // ...
+    public async Task<string> GetDocumentAsync(string address, CancellationToken cancel)  // <-------------GetDocumentAsync will be called twice like OpenIdConnectPostConfigureOptions:
+    {                                                                                     // first time:   "https://localhost:5001/.well-known/openid-configuration
+        // ...                                                                            // second time:  "https://localhost:5001/.well-known/openid-configuration/jwks"
         try
         {
             if (LogHelper.IsEnabled(EventLogLevel.Verbose))

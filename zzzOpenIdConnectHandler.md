@@ -787,7 +787,31 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
             if (_configuration == null && base.Options.ConfigurationManager != null)
             {
                 base.Logger.UpdatingConfiguration();
-                _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);
+                _configuration = await base.Options.ConfigurationManager.GetConfigurationAsync(base.Context.RequestAborted);  // <-----------------check OpenIdConnectPostConfigureOptions
+                 /* i1
+                    1. ConfigurationManager.GetConfigurationAsync() invoke, which calls await _configRetriever.GetConfigurationAsync(_metadataAddress, _docRetriever, ...)
+                       where _metadataAddress is "https://localhost:5005/.well-known/openid-configuration", 
+                       and _docRetriever is OpenIdConnectConfigurationRetriever
+                    
+                    2. OpenIdConnectConfigurationRetriever.GetAsync(string address, IDocumentRetriever retriever, ...) invoke,  retriever is HttpDocumentRetriever
+                    
+                    3. HttpDocumentRetriever.GetDocumentAsync(string address, CancellationToken cancel) invoke which calls `var response = await httpClient.GetAsync(uri, cancel)`
+                       this is how the the address is `opts.Authority = "https://localhost:5005"` is called
+
+                    now the configuration contains the result from calling https://localhost:5005/.well-known/openid-configuration , and then `https://localhost:5001/.well-known/openid-configuration/jwks`
+
+                    finally configuration contains someting like:
+                    {
+                        Issuer = "https://localhost:5001"
+                        JwksUri = "https://localhost:5001/.well-known/openid-configuration/jwks"
+                        JsonWebKeySet = {Microsoft.IdentityModel.Tokens.JsonWebKeySet}   // <----------get from calling JwksUri
+                        AuthorizationEndpoint = "https://localhost:5001/connect/authorize"
+                        EndSessionEndpoint = "https://localhost:5001/connect/endsession"
+                        CheckSessionIframe = "https://localhost:5001/connect/checksession"
+                        IntrospectionEndpoint = "https://localhost:5001/connect/introspect"
+
+                    }               
+                */
             }
 
             PopulateSessionProperties(authorizationResponse, properties);
@@ -3170,3 +3194,448 @@ public static class OpenIdConnectParameterNames
 //---------------------------------------------Ʌ
 ```
 
+
+## Introspection
+
+```C#
+//-----------------------------------------------V
+public static class OAuth2IntrospectionExtensions
+{
+    public static AuthenticationBuilder AddOAuth2Introspection(this AuthenticationBuilder builder) 
+        => builder.AddOAuth2Introspection(OAuth2IntrospectionDefaults.AuthenticationScheme);
+
+    public static AuthenticationBuilder AddOAuth2Introspection(this AuthenticationBuilder builder, string authenticationScheme) 
+        => builder.AddOAuth2Introspection(authenticationScheme, configureOptions: null);
+
+    public static AuthenticationBuilder AddOAuth2Introspection(this AuthenticationBuilder services, Action<OAuth2IntrospectionOptions> configureOptions) 
+        => services.AddOAuth2Introspection(OAuth2IntrospectionDefaults.AuthenticationScheme, configureOptions: configureOptions);
+
+    public static AuthenticationBuilder AddOAuth2Introspection(this AuthenticationBuilder builder, string authenticationScheme, Action<OAuth2IntrospectionOptions> configureOptions)
+    {
+        builder.Services.AddHttpClient(OAuth2IntrospectionDefaults.BackChannelHttpClientName);
+        
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<OAuth2IntrospectionOptions>, PostConfigureOAuth2IntrospectionOptions>());
+        return builder.AddScheme<OAuth2IntrospectionOptions, OAuth2IntrospectionHandler>(authenticationScheme, configureOptions);
+    }
+}
+//-----------------------------------------------Ʌ
+
+//-------------------------------------V
+public class OAuth2IntrospectionHandler : AuthenticationHandler<OAuth2IntrospectionOptions>
+{
+    private readonly IDistributedCache _cache;
+    private readonly ILogger<OAuth2IntrospectionHandler> _logger;
+
+    private static readonly ConcurrentDictionary<string, Lazy<Task<TokenIntrospectionResponse>>> IntrospectionDictionary = 
+        new ConcurrentDictionary<string Lazy<Task<TokenIntrospectionResponse>>>();
+
+    public OAuth2IntrospectionHandler(
+        IOptionsMonitor<OAuth2IntrospectionOptions> options,
+        UrlEncoder urlEncoder,
+        ISystemClock clock,
+        ILoggerFactory loggerFactory,
+        IDistributedCache cache = null)
+        : base(options, loggerFactory, urlEncoder, clock)
+    {
+        _logger = loggerFactory.CreateLogger<OAuth2IntrospectionHandler>();
+        _cache = cache;
+    }
+
+    protected new OAuth2IntrospectionEvents Events
+    {
+        get => (OAuth2IntrospectionEvents)base.Events;
+        set => base.Events = value;
+    }
+
+    protected override Task<object> CreateEventsAsync() => Task.FromResult<object>(new OAuth2IntrospectionEvents());
+
+    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var token = Options.TokenRetriever(Context.Request);
+
+        // no token - nothing to do here
+        if (token.IsMissing())
+        {
+            return AuthenticateResult.NoResult();
+        }
+
+        // if token contains a dot - it might be a JWT and we are skipping
+        // this is configurable
+        if (token.Contains('.') && Options.SkipTokensWithDots)
+        {
+            _logger.LogTrace("Token contains a dot - skipped because SkipTokensWithDots is set.");
+            return AuthenticateResult.NoResult();
+        }
+
+        // if caching is enable - let's check if we have a cached introspection
+        if (Options.EnableCaching)
+        {
+            var claims = await _cache.GetClaimsAsync(Options, token).ConfigureAwait(false);
+            if (claims != null)
+            {
+                // find out if it is a cached inactive token
+                var isInActive = claims.FirstOrDefault(c => string.Equals(c.Type, "active", StringComparison.OrdinalIgnoreCase) && string.Equals(c.Value, "false", StringComparison.OrdinalIgnoreCase));
+                if (isInActive != null)
+                {
+                    return await ReportNonSuccessAndReturn("Cached token is not active.", Context, Scheme, Events, Options);
+                }
+
+                return await CreateTicket(claims, token, Context, Scheme, Events, Options);
+            }
+
+            _logger.LogTrace("Token is not cached.");
+        }
+
+        // no cached result - let's make a network roundtrip to the introspection endpoint
+        // this code block tries to make sure that we only do a single roundtrip, even when multiple requests
+        // with the same token come in at the same time
+        try
+        {
+            Lazy<Task<TokenIntrospectionResponse>> GetTokenIntrospectionResponseLazy(string _)
+            {
+                return new Lazy<Task<TokenIntrospectionResponse>>(async () => await LoadClaimsForToken(token, Context, Scheme, Events, Options));
+            }
+
+            var response = await IntrospectionDictionary
+                .GetOrAdd(token, GetTokenIntrospectionResponseLazy)
+                .Value;
+
+            if (response.IsError)
+            {
+                _logger.LogError("Error returned from introspection endpoint: " + response.Error);
+                return await ReportNonSuccessAndReturn("Error returned from introspection endpoint: " + response.Error, Context, Scheme, Events, Options);
+            }
+
+            if (response.IsActive)
+            {
+                if (Options.EnableCaching)
+                {
+                    await _cache.SetClaimsAsync(Options, token, response.Claims, Options.CacheDuration, _logger).ConfigureAwait(false);
+                }
+
+                return await CreateTicket(response.Claims, token, Context, Scheme, Events, Options);
+            }
+            else
+            {
+                if (Options.EnableCaching)
+                {
+                    // add an exp claim - otherwise caching will not work
+                    var claimsWithExp = response.Claims.ToList();
+                    claimsWithExp.Add(new Claim("exp",
+                        DateTimeOffset.UtcNow.Add(Options.CacheDuration).ToUnixTimeSeconds().ToString()));
+                    await _cache.SetClaimsAsync(Options, token, claimsWithExp, Options.CacheDuration, _logger)
+                        .ConfigureAwait(false);
+                }
+
+                return await ReportNonSuccessAndReturn("Token is not active.", Context, Scheme, Events, Options);
+            }
+        }
+        finally
+        {
+            IntrospectionDictionary.TryRemove(token, out _);
+        }
+    }
+
+    private static async Task<AuthenticateResult> ReportNonSuccessAndReturn(
+        string error, 
+        HttpContext httpContext, 
+        AuthenticationScheme scheme, 
+        OAuth2IntrospectionEvents events, 
+        OAuth2IntrospectionOptions options)
+    {
+        var authenticationFailedContext = new AuthenticationFailedContext(httpContext, scheme, options)
+        {
+            Error = error
+        };
+
+        await events.AuthenticationFailed(authenticationFailedContext);
+
+        return authenticationFailedContext.Result ?? AuthenticateResult.Fail(error);
+    }
+
+    private static async Task<TokenIntrospectionResponse> LoadClaimsForToken(
+        string token, 
+        HttpContext context, 
+        AuthenticationScheme scheme, 
+        OAuth2IntrospectionEvents events, 
+        OAuth2IntrospectionOptions options)
+    {
+        var introspectionClient = await options.IntrospectionClient.Value.ConfigureAwait(false);
+        using var request = CreateTokenIntrospectionRequest(token, context, scheme, events, options);
+
+        var requestSendingContext = new SendingRequestContext(context, scheme, options)
+        {
+            TokenIntrospectionRequest = request,
+        };
+
+        await events.SendingRequest(requestSendingContext);
+
+        return await introspectionClient.IntrospectTokenAsync(request, context.RequestAborted).ConfigureAwait(false);
+    }
+
+    private static TokenIntrospectionRequest CreateTokenIntrospectionRequest(
+        string token,
+        HttpContext context,
+        AuthenticationScheme scheme,
+        OAuth2IntrospectionEvents events,
+        OAuth2IntrospectionOptions options)
+    {
+        if (options.ClientSecret == null && options.ClientAssertionExpirationTime <= DateTime.UtcNow)
+        {
+            lock (options.AssertionUpdateLockObj)
+            {
+                if (options.ClientAssertionExpirationTime <= DateTime.UtcNow)
+                {
+                    var updateClientAssertionContext = new UpdateClientAssertionContext(context, scheme, options)
+                    {
+                        ClientAssertion = options.ClientAssertion ?? new ClientAssertion()
+                    };
+
+                    events.UpdateClientAssertion(updateClientAssertionContext);
+
+                    options.ClientAssertion = updateClientAssertionContext.ClientAssertion;
+                    options.ClientAssertionExpirationTime =
+                        updateClientAssertionContext.ClientAssertionExpirationTime;
+                }
+            }
+        }
+
+        return new TokenIntrospectionRequest
+        {
+            Token = token,
+            TokenTypeHint = options.TokenTypeHint,
+            Address = options.IntrospectionEndpoint,
+            ClientId = options.ClientId,
+            ClientSecret = options.ClientSecret,
+            ClientAssertion = options.ClientAssertion ?? new ClientAssertion(),
+            ClientCredentialStyle = options.ClientCredentialStyle,
+            AuthorizationHeaderStyle = options.AuthorizationHeaderStyle,
+        };
+    }
+
+    private static async Task<AuthenticateResult> CreateTicket(
+        IEnumerable<Claim> claims, 
+        string token, 
+        HttpContext httpContext, 
+        AuthenticationScheme scheme, 
+        OAuth2IntrospectionEvents events,
+        OAuth2IntrospectionOptions options)
+    {
+        var authenticationType = options.AuthenticationType ?? scheme.Name;
+        var id = new ClaimsIdentity(claims, authenticationType, options.NameClaimType, options.RoleClaimType);
+        var principal = new ClaimsPrincipal(id);
+
+        var tokenValidatedContext = new TokenValidatedContext(httpContext, scheme, options)
+        {
+            Principal = principal,
+            SecurityToken = token
+        };
+
+        await events.TokenValidated(tokenValidatedContext);
+        if (tokenValidatedContext.Result != null)
+        {
+            return tokenValidatedContext.Result;
+        }
+
+        if (options.SaveToken)
+        {
+            tokenValidatedContext.Properties.StoreTokens(new[]
+            {
+                new AuthenticationToken { Name = "access_token", Value = token }
+            });
+        }
+
+        tokenValidatedContext.Success();
+        return tokenValidatedContext.Result;
+    }
+}
+//-------------------------------------Ʌ
+
+//-------------------------------------V
+public class OAuth2IntrospectionOptions : AuthenticationSchemeOptions
+{
+    public OAuth2IntrospectionOptions() { Events = new OAuth2IntrospectionEvents(); }
+
+    public string Authority { get; set; }
+    public string IntrospectionEndpoint { get; set; }
+    public string ClientId { get; set; }
+    public string ClientSecret { get; set; }
+    internal object AssertionUpdateLockObj = new object();
+    internal ClientAssertion ClientAssertion { get; set; }
+    internal DateTime ClientAssertionExpirationTime { get; set; }
+    public ClientCredentialStyle ClientCredentialStyle { get; set; } = ClientCredentialStyle.PostBody;
+    public BasicAuthenticationHeaderStyle AuthorizationHeaderStyle { get; set; } = BasicAuthenticationHeaderStyle.Rfc2617;
+    public string TokenTypeHint { get; set; } = OidcConstants.TokenTypes.AccessToken;
+    public string NameClaimType { get; set; } = "name";
+    public string RoleClaimType { get; set; } = "role";
+    public string AuthenticationType { get; set; }
+    public DiscoveryPolicy DiscoveryPolicy { get; set; } = new DiscoveryPolicy();
+    public bool SkipTokensWithDots { get; set; } = false;
+    public bool SaveToken { get; set; } = true;
+    public bool EnableCaching { get; set; } = false;
+    public TimeSpan CacheDuration { get; set; } = TimeSpan.FromMinutes(5);
+    public string CacheKeyPrefix { get; set; } = string.Empty;
+    public Func<OAuth2IntrospectionOptions,string, string> CacheKeyGenerator { get; set; } = CacheUtils.CacheKeyFromToken();
+    public Func<HttpRequest, string> TokenRetriever { get; set; } = TokenRetrieval.FromAuthorizationHeader();
+
+    public new OAuth2IntrospectionEvents Events
+    {
+        get => (OAuth2IntrospectionEvents)base.Events;
+        set => base.Events = value;
+    }
+
+    internal AsyncLazy<HttpClient> IntrospectionClient { get; set; }
+
+    public override void Validate()
+    {
+        base.Validate();
+
+        if (Authority.IsMissing() && IntrospectionEndpoint.IsMissing())
+        {
+            throw new InvalidOperationException("You must either set Authority or IntrospectionEndpoint");
+        }
+
+        if (TokenRetriever == null)
+        {
+            throw new ArgumentException("TokenRetriever must be set", nameof(TokenRetriever));
+        }
+    }
+}
+//-------------------------------------Ʌ
+```
+
+```C#
+//--------------------------------------------V
+public class OpenIdConnectPostConfigureOptions : IPostConfigureOptions<OpenIdConnectOptions>
+{
+    private readonly IDataProtectionProvider _dp;
+
+    public OpenIdConnectPostConfigureOptions(IDataProtectionProvider dataProtection)
+    {
+        _dp = dataProtection;
+    }
+
+    public void PostConfigure(string? name, OpenIdConnectOptions options)
+    {
+        options.DataProtectionProvider = options.DataProtectionProvider ?? _dp;
+
+        if (string.IsNullOrEmpty(options.SignOutScheme))
+        {
+            options.SignOutScheme = options.SignInScheme;
+        }
+
+        if (options.StateDataFormat == null)
+        {
+            var dataProtector = options.DataProtectionProvider.CreateProtector(
+                typeof(OpenIdConnectHandler).FullName!, name, "v1");
+            options.StateDataFormat = new PropertiesDataFormat(dataProtector);
+        }
+
+        if (options.StringDataFormat == null)
+        {
+            var dataProtector = options.DataProtectionProvider.CreateProtector(
+                typeof(OpenIdConnectHandler).FullName!,
+                typeof(string).FullName!,
+                name,
+                "v1");
+
+            options.StringDataFormat = new SecureDataFormat<string>(new StringSerializer(), dataProtector);
+        }
+
+        if (string.IsNullOrEmpty(options.TokenValidationParameters.ValidAudience) && !string.IsNullOrEmpty(options.ClientId))
+        {
+            options.TokenValidationParameters.ValidAudience = options.ClientId;
+        }
+
+        if (options.Backchannel == null)
+        {
+            options.Backchannel = new HttpClient(options.BackchannelHttpHandler ?? new HttpClientHandler());
+            options.Backchannel.DefaultRequestHeaders.UserAgent.ParseAdd("Microsoft ASP.NET Core OpenIdConnect handler");
+            options.Backchannel.Timeout = options.BackchannelTimeout;
+            options.Backchannel.MaxResponseContentBufferSize = 1024 * 1024 * 10; // 10 MB
+        }
+
+        if (options.ConfigurationManager == null)
+        {
+            if (options.Configuration != null)
+            {
+                options.ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(options.Configuration);
+            }
+            else if (!(string.IsNullOrEmpty(options.MetadataAddress) && string.IsNullOrEmpty(options.Authority)))
+            {
+                if (string.IsNullOrEmpty(options.MetadataAddress) && !string.IsNullOrEmpty(options.Authority))
+                {
+                    options.MetadataAddress = options.Authority;
+                    if (!options.MetadataAddress.EndsWith('/'))
+                    {
+                        options.MetadataAddress += "/";
+                    }
+
+                    options.MetadataAddress += ".well-known/openid-configuration";
+                }
+
+                if (options.RequireHttpsMetadata && !(options.MetadataAddress?.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ?? false))
+                {
+                    throw new InvalidOperationException("The MetadataAddress or Authority must use HTTPS unless disabled for development by setting RequireHttpsMetadata=false.");
+                }
+
+                options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(options.MetadataAddress, new OpenIdConnectConfigurationRetriever(),
+                    new HttpDocumentRetriever(options.Backchannel) { RequireHttps = options.RequireHttpsMetadata })
+                {
+                    RefreshInterval = options.RefreshInterval,
+                    AutomaticRefreshInterval = options.AutomaticRefreshInterval,
+                };
+            }
+        }
+    }
+}
+//--------------------------------------------Ʌ
+
+//--------------------------------V
+public class HttpDocumentRetriever : IDocumentRetriever
+{
+    private HttpClient _httpClient;
+    private static readonly HttpClient _defaultHttpClient = new HttpClient();
+
+    public const string StatusCode = "status_code";
+    public const string ResponseContent = "response_content";
+    public static bool DefaultSendAdditionalHeaderData { get; set; } = true;
+
+    private bool _sendAdditionalHeaderData = DefaultSendAdditionalHeaderData;
+
+    public bool SendAdditionalHeaderData { get; set; } = true;  // on _sendAdditionalHeaderData
+    
+    internal IDictionary<string, string> AdditionalHeaderData { get; set; }
+
+    public HttpDocumentRetriever() { }
+
+    public HttpDocumentRetriever(HttpClient httpClient)
+    {
+        _httpClient = httpClient;
+    }
+
+    public bool RequireHttps { get; set; } = true;
+                                                                                       
+    public async Task<string> GetDocumentAsync(string address, CancellationToken cancel)  // <--------------------GetDocumentAsync will be called twice:
+    {                                                                                     // first time:   "https://localhost:5001/.well-known/openid-configuration
+        // ...                                                                            // second time:  "https://localhost:5001/.well-known/openid-configuration/jwks"
+        try
+        {
+            if (LogHelper.IsEnabled(EventLogLevel.Verbose))
+                LogHelper.LogVerbose(LogMessages.IDX20805, address);
+
+            var httpClient = _httpClient ?? _defaultHttpClient;
+            var uri = new Uri(address, UriKind.RelativeOrAbsolute);
+            response = await SendAndRetryOnNetworkErrorAsync(httpClient, uri).ConfigureAwait(false);
+
+            var responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+                return responseContent;      
+        } 
+        // ...
+    }
+
+    private async Task<HttpResponseMessage> SendAndRetryOnNetworkErrorAsync(HttpClient httpClient, Uri uri);
+}
+//--------------------------------Ʌ
+```

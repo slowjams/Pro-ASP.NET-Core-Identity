@@ -236,8 +236,7 @@ Note that cookie can be:
 
 **A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end), so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
 
-**B**: `OpenIdConnectOptions.GetClaimsFromUserInfoEndpoint` is set to `true`, then `OpenIdConnectHandler` will call `https://localhost:5001/connect/userinfo` (access token is required in the bear header with this request) to get userinfo from IDP. The scopes inside Access Token will be extracted such as "sub", "name", "given_name", "family_name" claims because of `IdentityResource`/`Resource`'s `ICollection<string>` of `UserClaims`. Then `IProfileService` will be used to generate those claims. (u1.6, check `TestUserProfileService` for example)
-Later `AuthenticationTicket` is created (o4.4), so now **user-to-client** cookie can contain user info claims such as "name", "role" etc. Note that the id token still won't contains 'UserClaims". It is not a good practice to let id token contains "user specific claims" from Userinfo endpoint.
+**B**: `OpenIdConnectOptions.GetClaimsFromUserInfoEndpoint` is set to `true`, then `OpenIdConnectHandler` will call `https://localhost:5001/connect/userinfo` (access token is required in the bear header with this request) to get userinfo from IDP. The scopes inside Access Token will be extracted such as "sub", "name", "given_name", "family_name" claims because of `IdentityResource`/`Resource`'s `ICollection<string>` of `UserClaims`. Then `IProfileService` will be used to generate those claims. (u1.6, check `TestUserProfileService` or `LocalUserProfileService` for example). Later `AuthenticationTicket` is created (o4.4), so now **user-to-client** cookie can contain user info claims such as "name", "role" etc. Note that the id token still won't contains 'UserClaims". It is not a good practice to let id token contains "user specific claims" from Userinfo endpoint.
 
 Important thing to know, in the subsequent requst, only **user-to-client** cookie is needed for user to be authenticated, however if you develop logout functionality by only sign out this 
 user-to-client cooke, it will have issue shows below.
@@ -293,9 +292,6 @@ https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053f
 ```
 
 9. check `e2` flag you will see inside `/Account/Logout` page, it calls `await HttpContext.SignOutAsync()` which clear out user-idp cookie, i.e clear user session
-
-
-**!!!!!!!!!!!!!!!!Question: what if user-to-client cookie is still valid while access token expired? users are not supporsed to be active state while he can still sign in clientApp, also how idp reconginize access token and associate it with user?**
 
 
 10. Send requests to API with access token. It is important to note that Api's `HttpContext.User`'s `ClaimsPrincipal` is constructed by `JwtBearerHandler` based on the access token (check j0.4 flag).
@@ -465,8 +461,7 @@ and if you refresh the page, you will still be signin, and this time you will se
 behind the scene, every time you refresh the page, it triggers a request of `https://localhost:5001/connect/authorize`, since user still remain login with idp (only user-to-client cookie expires), then idp does the same process as before and return id token and access token to client via backchannel then client forwards those tokens to user
 
 
-**Refresh Token** (a reference typed token, not JWT type token, e.g `5074EFBCAE346907E56AF97FF481CEAE9E97864365F6E8A67C39A22416E34035-1`)
-only get generated when users requests with"offline_access" scope with idp's setting being `AllowOfflineAccess = true`  (check ofa flag). When you use a refresh token to generate a new access token, the lifespan or Time To Live (TTL) of the refresh token **remains the same** as specified in the initial OAuth flow (`AbsoluteRefreshTokenLifetime`), and the new access token has a new TTL of `AccessTokenLifetime`.
+**Refresh Token** (a reference typed token, not JWT type token, e.g `5074EFBCAE346907E56AF97FF481CEAE9E97864365F6E8A67C39A22416E34035-1`) only get generated when users requests with"offline_access" scope with idp's setting being `AllowOfflineAccess = true`  (check ofa flag). When you use a refresh token to generate a new access token, the lifespan or Time To Live (TTL) of the refresh token **remains the same** as specified in the initial OAuth flow (`AbsoluteRefreshTokenLifetime`), and the new access token has a new TTL of `AccessTokenLifetime`.
 
 The reason why Refresh Token is associated with offline access is that when user-to-idp cookies expires, users normally have to be redirect to the idp's login page to enter credentials again. With refresh token, user doesn't need to login in idp again.
 
@@ -580,6 +575,149 @@ public class BearerTokenHandler : DelegatingHandler  // this is roughly what Add
 
 note that this "offline feature" implementation check whether an access token is expired/about to expire **before** sending the request with access token to Api, it is **not** something like send request with expired access token to Api first then retry
 
+Access token can also be reference-type token, check `itp` flag to see how introspection process works. The benifits of access tokens being reference-type is, we can much control on its lifetime (the cost is client have to communicate with idp each time because the nature of reference-type tokens ) compared to jtw type (self-contained) of access token we don't have control on its lifetime, but the benefits of jwt type access token, we don't need to communicate with idp when validting tokens (of course, initial requests from `HttpDocumentRetriever` are needed to get jwks etc, but after that no need to communicate with idp anymore)
+
+To use referenced-type jwt, `AddJwtBearer` cannot be used anymore:
+
+```C#
+// ClientProgram.cs
+ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+//.AddJwtBearer(options =>
+//{
+//    options.Authority = "https://localhost:5001";
+//    options.Audience = "imagegalleryapi";  // <----------to validate whether the passed access token contains "aud" claim whose value should be "imagegalleryapi"
+//    options.TokenValidationParameters = new TokenValidationParameters()
+//    {
+//        NameClaimType = "given_name",
+//        RoleClaimType = "role",
+//        ValidTypes = new[] { "at+jwt" },  // quite new setting, to avoid arbitary token with HMAC attack, no need to know in details                
+
+//        ClockSkew = TimeSpan.FromSeconds(0)
+//    };
+//});
+.AddOAuth2Introspection(options =>  // call idp's /connect/introspect 
+{
+    options.Authority = "https://localhost:5001";
+    options.ClientId = "imagegalleryapi";
+    options.ClientSecret = "apisecret";
+    options.NameClaimType = "given_name";
+    options.RoleClaimType = "role";
+});
+```
+
+```C#
+// idp
+public static IEnumerable<Client> Clients =>
+    new Client[] 
+        {
+            new Client()
+            {
+                ClientName = "Image Gallery",
+                ClientId = "imagegalleryclient",
+                AccessTokenType = AccessTokenType.Reference,  // <------------------------------change it to Refrence type, default is AccessTokenType.Jwt
+                // ...
+            }
+        };
+```
+
+
+## Generating a Token with `dotnet user-jwts`
+
+```c#
+dotnet user-jwts create [options]
+/*
+  -n|--name     The name of the user to create the JWT for. Defaults to the current environment user.
+  --audience    The audiences to create the JWT for. Defaults to the URLs configured in the project's launchSettings.json.
+  --issuer      The issuer of the JWT. Defaults to 'dotnet-user-jwts'.
+  --scope       A scope claim to add to the JWT. Specify once for each scope.
+  --role        A role claim to add to the JWT. Specify once for each role.
+  --claim       Claims to add to the JWT. Specify once for each claim in the format "name=value".
+  --not-before  The UTC date & time the JWT should not be valid before in the format 'yyyy-MM-dd [[HH:mm[[:ss]]]]'. Defaults to the date & time the JWT is created.
+  --expires-on
+*/
+
+
+dotnet user-jwts create -n "b7539694-97e7-4dfe-84da-b4256e1ff5c7"
+/*
+{
+  "unique_name": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+  "sub": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+  "jti": "a179ba9",
+  "aud": [
+    "http://localhost:17302",
+    "https://localhost:44324",
+    "https://localhost:7075",
+    "http://localhost:5075"
+  ],
+  "nbf": 1723990414,
+  "exp": 1731939214,
+  "iat": 1723990415,
+  "iss": "dotnet-user-jwts"
+}
+Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6ImI3NTM5Njk0LTk3ZTctNGRmZS04NGRhLWI0MjU2ZTFmZjVjNyIsInN1YiI6ImI3NTM5Njk0LTk3ZTctNGRmZS04NGRhLWI0MjU2ZTFmZjVjNyIsImp0aSI6ImExNzliYTkiLCJhdWQiOlsiaHR0cDovL2xvY2FsaG9zdDoxNzMwMiIsImh0dHBzOi8vbG9jYWxob3N0OjQ0MzI0IiwiaHR0cHM6Ly9sb2NhbGhvc3Q6NzA3NSIsImh0dHA6Ly9sb2NhbGhvc3Q6NTA3NSJdLCJuYmYiOjE3MjM5OTA0MTQsImV4cCI6MTczMTkzOTIxNCwiaWF0IjoxNzIzOTkwNDE1LCJpc3MiOiJkb3RuZXQtdXNlci1qd3RzIn0.wjNVilLX7r-RGgfdg7SbTzGo4usz2WkamRIjt9I9OjE
+*/
+```
+
+when you create a local jwt using `dotnet user-jwts create`, following changes are added automatically:
+
+```json 
+//appsetting.Development.json, you also need to comment out all option settings in `AddJwtBearer`
+// ...
+"Authentication": {
+    "Schemes": {
+      "Bearer": {
+        "ValidAudiences": [
+          "http://localhost:17302",
+          "https://localhost:44324",
+          "https://localhost:7075",
+          "http://localhost:5075"
+        ],
+        "ValidIssuer": "dotnet-user-jwts"
+      }
+    }
+  }
+```
+
+```xml
+<PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <WarningLevel>0</WarningLevel>
+    <UserSecretsId>8xxx-xxx-xxx-xxx-xxxxxxxx</UserSecretsId>
+</PropertyGroup>
+```
+
+```C#
+// %APPDATA%\Microsoft\UserSecrets\<secrets_GUID>\secrets.json
+{
+    "Authentication:Schemes:Bearer:SigningKeys": [
+        {
+            "Id": "92dcc84b",
+            "Issuer": "dotnet-user-jwts",
+            "Value": "evIxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "Length": 32
+        }
+    ]
+}
+
+// %APPDATA%\Microsoft\UserSecrets\<secrets_GUID>\user-jwts.json
+{
+    "a179ba9": {
+        "Id": "a179ba9",
+        "Scheme": "Bearer",
+        "Name": "b7539694-97e7-4dfe-84da-b4256e1ff5c7",
+        "Audience": "http://localhost:17302, https://localhost:44324, https://localhost:7075, http://localhost:5075",
+        "NotBefore": "2024-08-18T14:13:34+00:00",
+        "Expires": "2024-11-18T14:13:34+00:00",
+        "Issued": "2024-08-18T14:13:35+00:00",
+        "Token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6ImI3NTM5Njk0LTk3ZTctNGRmZS04NGRhLWI0MjU2ZTFmZjVjNyIsInN1YiI6ImI3NTM5Njk0LTk3ZTctNGRmZS04NGRhLWI0MjU2ZTFmZjVjNyIsImp0aSI6ImExNzliYTkiLCJhdWQiOlsiaHR0cDovL2xvY2FsaG9zdDoxNzMwMiIsImh0dHBzOi8vbG9jYWxob3N0OjQ0MzI0IiwiaHR0cHM6Ly9sb2NhbGhvc3Q6NzA3NSIsImh0dHA6Ly9sb2NhbGhvc3Q6NTA3NSJdLCJuYmYiOjE3MjM5OTA0MTQsImV4cCI6MTczMTkzOTIxNCwiaWF0IjoxNzIzOTkwNDE1LCJpc3MiOiJkb3RuZXQtdXNlci1qd3RzIn0.wjNVilLX7r-RGgfdg7SbTzGo4usz2WkamRIjt9I9OjE",
+        "Scopes": [],
+        "Roles": [],
+        "CustomClaims": {}
+    }
+}
+```
 =========================================================================
 Before `JsonWebTokenHandler.DefaultInboundClaimTypeMap.Clear()`  (check jcm flag)
 
@@ -872,6 +1010,14 @@ public class IdentityServerProgram
 
         builder.Services.AddRazorPages();
 
+        builder.Services.AddScoped<ILocalUserService, LocalUserService>();
+
+        builder.Services.AddDbContext<IdentityDbContext>(options =>
+        {
+            options.UseSqlite(
+                builder.Configuration.GetConnectionString("MarvinIdentityDBConnectionString"));
+        });
+
         builder.Services.AddIdentityServer(options => 
         {
             options.EmitStaticAudienceClaim = true;
@@ -882,7 +1028,8 @@ public class IdentityServerProgram
         .AddInMemoryIdentityResources(Config.IdentityResources)
         .AddInMemoryApiScopes(Config.ApiScopes)
         .AddInMemoryClients(Config.Clients)
-        .AddTestUsers(TestUsers.Users);
+        //.AddTestUsers(TestUsers.Users);
+        .AddProfileService<LocalUserProfileService>();
 
         var app = builder.Build();
 
@@ -1284,4 +1431,342 @@ public class ClientProgram
     }
 }
 //-------------------------Ʌ Client
+```
+
+```C#
+//--------------------------------V
+public interface ILocalUserService
+{
+    Task<bool> ValidateCredentialsAsync(string userName, string password);
+    Task<IEnumerable<UserClaim>> GetUserClaimsBySubjectAsync(string subject);
+    Task<User> GetUserByUserNameAsync(string userName);
+    Task<User> GetUserBySubjectAsync(string subject);
+    void AddUser(User userToAdd);
+    Task<bool> IsUserActive(string subject);
+    Task<bool> SaveChangesAsync();
+}
+
+public class LocalUserService : ILocalUserService
+{
+    private readonly IdentityDbContext _context;
+
+    public LocalUserService(IdentityDbContext context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    public async Task<bool> IsUserActive(string subject)
+    {
+        var user = await GetUserBySubjectAsync(subject);
+
+        if (user == null)
+            return false;
+
+        return user.Active;
+    }
+
+    public async Task<bool> ValidateCredentialsAsync(string userName, string password)
+    {
+        if (string.IsNullOrWhiteSpace(userName) || string.IsNullOrWhiteSpace(password))
+            return false;
+
+        var user = await GetUserByUserNameAsync(userName);
+
+        if (user == null)
+            return false;
+
+        if (!user.Active)
+            return false;
+
+        // Validate credentials
+        return (user.Password == password);
+    } 
+
+    public async Task<User> GetUserByUserNameAsync(string userName)
+    {      
+        return await _context.Users
+                .FirstOrDefaultAsync(u => u.UserName == userName);
+    }
+
+    public async Task<IEnumerable<UserClaim>> GetUserClaimsBySubjectAsync(string subject)
+    {
+        return await _context.UserClaims.Where(u => u.User.Subject == subject).ToListAsync();
+    }
+
+    public async Task<User> GetUserBySubjectAsync(string subject)
+    {
+        return await _context.Users.FirstOrDefaultAsync(u => u.Subject == subject);
+    }
+
+    public void AddUser(User userToAdd)
+    {
+        if (_context.Users.Any(u => u.UserName == userToAdd.UserName))
+            // in a real-life scenario you'll probably want to return this as a validation issue
+            throw new Exception("Username must be unique");
+
+        _context.Users.Add(userToAdd);
+    }
+
+
+    public async Task<bool> SaveChangesAsync()
+    {
+        return (await _context.SaveChangesAsync() > 0);
+    }
+}
+//--------------------------------Ʌ
+
+//----------------------------------V
+public class LocalUserProfileService : IProfileService
+{
+    private readonly ILocalUserService _localUserService;
+
+    public LocalUserProfileService(ILocalUserService localUserService)
+    {
+        _localUserService = localUserService ??
+            throw new ArgumentNullException(nameof(localUserService));
+    }
+
+    public async Task GetProfileDataAsync(ProfileDataRequestContext context)
+    {
+        var subjectId = context.Subject.GetSubjectId();
+        var claimsForUser = (await _localUserService
+            .GetUserClaimsBySubjectAsync(subjectId))
+            .ToList();
+
+        context.AddRequestedClaims(
+            claimsForUser.Select(c => new Claim(c.Type, c.Value)).ToList());
+
+    }
+
+    public async Task IsActiveAsync(IsActiveContext context)
+    {
+        var subjectId = context.Subject.GetSubjectId();
+
+        context.IsActive = await _localUserService.IsUserActive(subjectId);
+    }
+}
+//----------------------------------Ʌ
+```
+
+```C#
+//----------------------------V Login Razor Page
+[SecurityHeaders]
+[AllowAnonymous]
+public class Index : PageModel
+{
+    //private readonly TestUserStore _users;
+    private readonly ILocalUserService _localUserService;
+    private readonly IIdentityServerInteractionService _interaction;
+    private readonly IEventService _events;
+    private readonly IAuthenticationSchemeProvider _schemeProvider;
+    private readonly IIdentityProviderStore _identityProviderStore;
+
+    public ViewModel View { get; set; } = default!;
+
+    [BindProperty]
+    public InputModel Input { get; set; } = default!;
+
+    public Index(
+        IIdentityServerInteractionService interaction,
+        IAuthenticationSchemeProvider schemeProvider,
+        IIdentityProviderStore identityProviderStore,
+        IEventService events,
+        ILocalUserService localUserService)
+    {
+        // this is where you would plug in your own custom identity management library (e.g. ASP.NET Identity)
+        //_users = users ?? throw new InvalidOperationException("Please call 'AddTestUsers(TestUsers.Users)' on the IIdentityServerBuilder in Startup or remove the TestUserStore from the AccountController.");
+        _localUserService = localUserService ?? throw new ArgumentNullException(nameof(localUserService));
+
+        _interaction = interaction;
+        _schemeProvider = schemeProvider;
+        _identityProviderStore = identityProviderStore;
+        _events = events;
+    }
+
+    public async Task<IActionResult> OnGet(string? returnUrl)  // ReturnUrl is already "/connect/authorize/callback?client_id=xxxx"
+    {
+        await BuildModelAsync(returnUrl);
+            
+        if (View.IsExternalLoginOnly)
+        {
+            // we only have one option for logging in and it's an external provider
+            return RedirectToPage("/ExternalLogin/Challenge", new { scheme = View.ExternalLoginScheme, returnUrl });
+        }
+
+        return Page();
+    }
+        
+    public async Task<IActionResult> OnPost()
+    {
+        // check if we are in the context of an authorization request
+        var context = await _interaction.GetAuthorizationContextAsync(Input.ReturnUrl);  // ReturnUrl is "/connect/authorize/callback?client_id=xxxx"
+
+        // the user clicked the "cancel" button
+        if (Input.Button != "login")
+        {
+            if (context != null)
+            {
+                // This "can't happen", because if the ReturnUrl was null, then the context would be null
+                ArgumentNullException.ThrowIfNull(Input.ReturnUrl, nameof(Input.ReturnUrl));
+
+                // if the user cancels, send a result back into IdentityServer as if they 
+                // denied the consent (even if this client does not require consent).
+                // this will send back an access denied OIDC error response to the client.
+                await _interaction.DenyAuthorizationAsync(context, AuthorizationError.AccessDenied);
+
+                // we can trust model.ReturnUrl since GetAuthorizationContextAsync returned non-null
+                if (context.IsNativeClient())
+                {
+                    // The client is native, so this change in how to
+                    // return the response is for better UX for the end user.
+                    return this.LoadingPage(Input.ReturnUrl);
+                }
+
+                return Redirect(Input.ReturnUrl ?? "~/");
+            }
+            else
+            {
+                // since we don't have a valid context, then we just go back to the home page
+                return Redirect("~/");
+            }
+        }
+
+        if (ModelState.IsValid)
+        {
+            // validate username/password against in-memory store
+            if (await _localUserService.ValidateCredentialsAsync(Input.Username, Input.Password))
+            {
+                //var user = _users.FindByUsername(Input.Username);
+                var user = await _localUserService.GetUserByUserNameAsync(Input.Username);
+                await _events.RaiseAsync(new UserLoginSuccessEvent(user.UserName, user.Subject, user.UserName, clientId: context?.Client.ClientId));
+                Telemetry.Metrics.UserLogin(context?.Client.ClientId, IdentityServerConstants.LocalIdentityProvider);
+
+                // only set explicit expiration here if user chooses "remember me". 
+                // otherwise we rely upon expiration configured in cookie middleware.
+                var props = new AuthenticationProperties();
+                if (LoginOptions.AllowRememberLogin && Input.RememberLogin)
+                {
+                    props.IsPersistent = true;
+                    props.ExpiresUtc = DateTimeOffset.UtcNow.Add(LoginOptions.RememberMeLoginDuration);
+                };
+
+                // issue authentication cookie with subject ID and username
+                var isuser = new IdentityServerUser(user.Subject)
+                {
+                    DisplayName = user.UserName
+                };
+
+                await HttpContext.SignInAsync(isuser, props);
+
+                if (context != null)
+                {
+                    // This "can't happen", because if the ReturnUrl was null, then the context would be null
+                    ArgumentNullException.ThrowIfNull(Input.ReturnUrl, nameof(Input.ReturnUrl));
+
+                    if (context.IsNativeClient())
+                    {
+                        // The client is native, so this change in how to
+                        // return the response is for better UX for the end user.
+                        return this.LoadingPage(Input.ReturnUrl);
+                    }
+
+                    // we can trust model.ReturnUrl since GetAuthorizationContextAsync returned non-null
+                    return Redirect(Input.ReturnUrl ?? "~/");
+                }
+
+                // request for a local page
+                if (Url.IsLocalUrl(Input.ReturnUrl))
+                {
+                    return Redirect(Input.ReturnUrl);
+                }
+                else if (string.IsNullOrEmpty(Input.ReturnUrl))
+                {
+                    return Redirect("~/");
+                }
+                else
+                {
+                    // user might have clicked on a malicious link - should be logged
+                    throw new ArgumentException("invalid return URL");
+                }
+            }
+
+            const string error = "invalid credentials";
+            await _events.RaiseAsync(new UserLoginFailureEvent(Input.Username, error, clientId:context?.Client.ClientId));
+            Telemetry.Metrics.UserLoginFailure(context?.Client.ClientId, IdentityServerConstants.LocalIdentityProvider, error);
+            ModelState.AddModelError(string.Empty, LoginOptions.InvalidCredentialsErrorMessage);
+        }
+
+        // something went wrong, show form with error
+        await BuildModelAsync(Input.ReturnUrl);
+        return Page();
+    }
+
+    private async Task BuildModelAsync(string? returnUrl)
+    {
+        Input = new InputModel
+        {
+            ReturnUrl = returnUrl
+        };
+            
+        var context = await _interaction.GetAuthorizationContextAsync(returnUrl);
+        if (context?.IdP != null && await _schemeProvider.GetSchemeAsync(context.IdP) != null)
+        {
+            var local = context.IdP == Duende.IdentityServer.IdentityServerConstants.LocalIdentityProvider;
+
+            // this is meant to short circuit the UI and only trigger the one external IdP
+            View = new ViewModel
+            {
+                EnableLocalLogin = local,
+            };
+
+            Input.Username = context.LoginHint;
+
+            if (!local)
+            {
+                View.ExternalProviders = new[] { new ViewModel.ExternalProvider ( authenticationScheme: context.IdP ) };
+            }
+
+            return;
+        }
+
+        var schemes = await _schemeProvider.GetAllSchemesAsync();
+
+        var providers = schemes
+            .Where(x => x.DisplayName != null)
+            .Select(x => new ViewModel.ExternalProvider
+            (
+                authenticationScheme: x.Name,
+                displayName: x.DisplayName ?? x.Name
+            )).ToList();
+
+        var dynamicSchemes = (await _identityProviderStore.GetAllSchemeNamesAsync())
+            .Where(x => x.Enabled)
+            .Select(x => new ViewModel.ExternalProvider
+            (
+                authenticationScheme: x.Scheme,
+                displayName: x.DisplayName ?? x.Scheme
+            ));
+        providers.AddRange(dynamicSchemes);
+
+
+        var allowLocal = true;
+        var client = context?.Client;
+        if (client != null)
+        {
+            allowLocal = client.EnableLocalLogin;
+            if (client.IdentityProviderRestrictions != null && client.IdentityProviderRestrictions.Count != 0)
+            {
+                providers = providers.Where(provider => client.IdentityProviderRestrictions.Contains(provider.AuthenticationScheme)).ToList();
+            }
+        }
+
+        View = new ViewModel
+        {
+            AllowRememberLogin = LoginOptions.AllowRememberLogin,
+            EnableLocalLogin = allowLocal && LoginOptions.AllowLocalLogin,
+            ExternalProviders = providers.ToArray()
+        };
+    }
+}
+//----------------------------Ʌ
 ```

@@ -232,7 +232,7 @@ public static class IdentityServerBuilderExtensionsCore
         builder.Services.AddTransient<IEndpointRouter, EndpointRouter>();  // <---------------------------------q1, it is IdentityServer's own Router like UseRouting()
  
         builder.AddEndpoint<AuthorizeCallbackEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.AuthorizeCallback.EnsureLeadingSlash());   // <---------------------c1.0
-        builder.AddEndpoint<AuthorizeEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.Authorize.EnsureLeadingSlash());   // <-----------------------q1,q2 handles /connect/authorize
+        builder.AddEndpoint<AuthorizeEndpoint>(EndpointNames.Authorize, ProtocolRoutePaths.Authorize.EnsureLeadingSlash()); // <-------q1,q2 handles https://localhost:5001/connect/authorize
         builder.AddEndpoint<CheckSessionEndpoint>(EndpointNames.CheckSession, ProtocolRoutePaths.CheckSession.EnsureLeadingSlash());
         builder.AddEndpoint<DeviceAuthorizationEndpoint>(EndpointNames.DeviceAuthorization, ProtocolRoutePaths.DeviceAuthorization.EnsureLeadingSlash());
         builder.AddEndpoint<DiscoveryKeyEndpoint>(EndpointNames.Discovery, ProtocolRoutePaths.DiscoveryWebKeys.EnsureLeadingSlash());
@@ -240,7 +240,7 @@ public static class IdentityServerBuilderExtensionsCore
         builder.AddEndpoint<EndSessionCallbackEndpoint>(EndpointNames.EndSession, ProtocolRoutePaths.EndSessionCallback.EnsureLeadingSlash());  //<----------so
         builder.AddEndpoint<EndSessionEndpoint>(EndpointNames.EndSession, ProtocolRoutePaths.EndSession.EnsureLeadingSlash());
         builder.AddEndpoint<IntrospectionEndpoint>(EndpointNames.Introspection, ProtocolRoutePaths.Introspection.EnsureLeadingSlash());
-        builder.AddEndpoint<TokenRevocationEndpoint>(EndpointNames.Revocation, ProtocolRoutePaths.Revocation.EnsureLeadingSlash());
+        builder.AddEndpoint<TokenRevocationEndpoint>(EndpointNames.Revocation, ProtocolRoutePaths.Revocation.EnsureLeadingSlash());  // handles https://localhost:5001/connect/revocation
         builder.AddEndpoint<TokenEndpoint>(EndpointNames.Token, ProtocolRoutePaths.Token.EnsureLeadingSlash());
         builder.AddEndpoint<UserInfoEndpoint>(EndpointNames.UserInfo, ProtocolRoutePaths.UserInfo.EnsureLeadingSlash());
  
@@ -1249,6 +1249,142 @@ class EndSessionCallbackHttpWriter : IHttpResponseWriter<EndSessionCallbackResul
     }
 }
 //-----------------------------------Ʌ
+
+//----------------------------------V
+internal class IntrospectionEndpoint : IEndpointHandler  // handle POST https://localhost:5001/connect/introspect 
+{
+    private readonly IIntrospectionResponseGenerator _responseGenerator;
+    private readonly IEventService _events;
+    private readonly ILogger _logger;
+    private readonly IIntrospectionRequestValidator _requestValidator;
+    private readonly IApiSecretValidator _apiSecretValidator;
+    private readonly IClientSecretValidator _clientValidator;
+
+    public IntrospectionEndpoint(
+        IApiSecretValidator apiSecretValidator,
+        IClientSecretValidator clientValidator,
+        IIntrospectionRequestValidator requestValidator,
+        IIntrospectionResponseGenerator responseGenerator,
+        IEventService events,
+        ILogger<IntrospectionEndpoint> logger)
+    {
+        // ...
+    }
+
+    public async Task<IEndpointResult> ProcessAsync(HttpContext context)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.Introspection + "Endpoint");
+        
+        _logger.LogTrace("Processing introspection request.");
+
+        // validate HTTP
+        if (!HttpMethods.IsPost(context.Request.Method))
+        {
+            _logger.LogWarning("Introspection endpoint only supports POST requests");
+            return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
+        }
+
+        if (!context.Request.HasApplicationFormContentType())
+        {
+            _logger.LogWarning("Invalid media type for introspection endpoint");
+            return new StatusCodeResult(HttpStatusCode.UnsupportedMediaType);
+        }
+
+        try
+        {
+            return await ProcessIntrospectionRequestAsync(context);
+        }
+        catch (InvalidDataException ex)
+        {
+            _logger.LogWarning(ex, "Invalid HTTP request for introspection endpoint");
+            return new StatusCodeResult(HttpStatusCode.BadRequest);
+        }
+    }
+
+    private async Task<IEndpointResult> ProcessIntrospectionRequestAsync(HttpContext context)
+    {
+        _logger.LogDebug("Starting introspection request.");
+
+        // caller validation
+        ClientSecretValidationResult clientResult = null;
+
+        ApiResource api = null;
+        Client client = null;
+
+        var apiResult = await _apiSecretValidator.ValidateAsync(context);
+        if (apiResult.IsError)
+        {
+            clientResult = await _clientValidator.ValidateAsync(context);
+            if (clientResult.IsError)
+            {
+                _logger.LogError("Unauthorized call introspection endpoint. aborting.");
+                return new StatusCodeResult(HttpStatusCode.Unauthorized);
+            }
+            else
+            {
+                client = clientResult.Client;
+                _logger.LogDebug("Client making introspection request: {clientId}", client.ClientId);
+            }
+        }
+        else
+        {
+            api = apiResult.Resource;
+            _logger.LogDebug("ApiResource making introspection request: {apiId}", api.Name);
+        }
+
+        var callerName = api?.Name ?? client.ClientId;
+       
+        var body = await context.Request.ReadFormAsync();  // <------------------------------------itp
+        /*
+            {[token, 3FC7A32A760014ED8E35C99D81565713180F1E21BF626038D43FA366C54B7686-1]}
+            {[token_type_hint, access_token]}
+            {[client_id, imagegalleryapi]}
+            {[client_secret, apisecret]}
+        */
+
+        if (body == null)
+        {
+            _logger.LogError("Malformed request body. aborting.");
+            const string error = "Malformed request body";
+            await _events.RaiseAsync(new TokenIntrospectionFailureEvent(callerName, error));
+            
+            return new StatusCodeResult(HttpStatusCode.BadRequest);
+        }
+
+        // request validation
+        _logger.LogTrace("Calling into introspection request validator: {type}", _requestValidator.GetType().FullName);
+        var validationRequest = new IntrospectionRequestValidationContext
+        {
+            Parameters = body.AsNameValueCollection(),
+            Api = api,
+            Client = client,
+        };
+           
+        var validationResult = await _requestValidator.ValidateAsync(validationRequest);  // <------------------itp, eventually calls TokenValidator.ValidateReferenceAccessTokenAsync()
+        /*  validationResult contains 
+             Api = imagegalleryapi
+             Claims = Count = 24   // contains all claims such as { "role" : "payinguser" }
+             Token = "71780BC5B05DA756BDB153A04C7485FCB66E975F82E533C122EBC1E331F89F5A-1"
+        */
+        if (validationResult.IsError)
+        {
+            LogFailure(validationResult.Error, callerName);
+            await _events.RaiseAsync(new TokenIntrospectionFailureEvent(callerName, validationResult.Error));
+
+            return new BadRequestResult(validationResult.Error);
+        }
+
+        // response generation
+        _logger.LogTrace("Calling into introspection response generator: {type}", _responseGenerator.GetType().FullName);
+
+        var response = await _responseGenerator.ProcessAsync(validationResult);  // <-----------------------pass the reference-type access token 
+
+        // render result
+        LogSuccess(validationResult.IsActive, callerName);
+        return new IntrospectionResult(response);
+    }
+}
+//----------------------------------Ʌ
 
 //------------------------------------------>>
 public interface IEndSessionRequestValidator
@@ -4100,6 +4236,448 @@ public class PersistedGrantStore : Duende.IdentityServer.Stores.IPersistedGrantS
 }
 //------------------------------Ʌ
 
+//---------------------------V
+internal class TokenValidator : ITokenValidator
+{
+    private readonly ILogger _logger;
+    private readonly IdentityServerOptions _options;
+    private readonly IIssuerNameService _issuerNameService;
+    private readonly IReferenceTokenStore _referenceTokenStore;
+    private readonly ICustomTokenValidator _customValidator;
+    private readonly IClientStore _clients;
+    private readonly IProfileService _profile;
+    private readonly IKeyMaterialService _keys;
+    private readonly ISessionCoordinationService _sessionCoordinationService;
+    private readonly IClock _clock;
+    private readonly TokenValidationLog _log;
+
+    public TokenValidator(
+        IdentityServerOptions options,
+        IIssuerNameService issuerNameService,
+        IClientStore clients,
+        IProfileService profile,
+        IReferenceTokenStore referenceTokenStore,
+        ICustomTokenValidator customValidator,
+        IKeyMaterialService keys,
+        ISessionCoordinationService sessionCoordinationService,
+        IClock clock,
+        ILogger<TokenValidator> logger)
+    {
+        _options = options;
+        _issuerNameService = issuerNameService;
+        _clients = clients;
+        _profile = profile;
+        _referenceTokenStore = referenceTokenStore;
+        _customValidator = customValidator;
+        _keys = keys;
+        _sessionCoordinationService = sessionCoordinationService;
+        _clock = clock;
+        _logger = logger;
+
+        _log = new TokenValidationLog();
+    }
+
+    public async Task<TokenValidationResult> ValidateIdentityTokenAsync(string token, string clientId = null,
+        bool validateLifetime = true)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity("TokenValidator.ValidateIdentityToken");
+        
+        _logger.LogDebug("Start identity token validation");
+
+        if (token.Length > _options.InputLengthRestrictions.Jwt)
+        {
+            _logger.LogError("JWT too long");
+            return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+        }
+
+        if (clientId.IsMissing())
+        {
+            clientId = GetClientIdFromJwt(token);
+
+            if (clientId.IsMissing())
+            {
+                _logger.LogError("No clientId supplied, can't find id in identity token.");
+                return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+            }
+        }
+
+        _log.ClientId = clientId;
+        _log.ValidateLifetime = validateLifetime;
+
+        var client = await _clients.FindEnabledClientByIdAsync(clientId);
+        if (client == null)
+        {
+            _logger.LogError("Unknown or disabled client: {clientId}.", clientId);
+            return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+        }
+
+        _log.ClientName = client.ClientName;
+        _logger.LogDebug("Client found: {clientId} / {clientName}", client.ClientId, client.ClientName);
+
+        var keys = await _keys.GetValidationKeysAsync();
+        var result = await ValidateJwtAsync(token, keys, audience: clientId, validateLifetime: validateLifetime);
+
+        result.Client = client;
+
+        if (result.IsError)
+        {
+            LogError("Error validating JWT");
+            return result;
+        }
+
+        _logger.LogDebug("Calling into custom token validator: {type}", _customValidator.GetType().FullName);
+        var customResult = await _customValidator.ValidateIdentityTokenAsync(result);
+
+        if (customResult.IsError)
+        {
+            LogError("Custom validator failed: " + (customResult.Error ?? "unknown"));
+            return customResult;
+        }
+
+        _log.Claims = customResult.Claims.ToClaimsDictionary();
+
+        LogSuccess();
+        return customResult;
+    }
+
+    public async Task<TokenValidationResult> ValidateAccessTokenAsync(string token, string expectedScope = null)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity("TokenValidator.ValidateAccessToken");
+        
+        _logger.LogTrace("Start access token validation");
+
+        _log.ExpectedScope = expectedScope;
+        _log.ValidateLifetime = true;
+
+        TokenValidationResult result;
+
+        if (token.Contains("."))
+        {
+            if (token.Length > _options.InputLengthRestrictions.Jwt)
+            {
+                _logger.LogError("JWT too long");
+
+                return new TokenValidationResult
+                {
+                    IsError = true,
+                    Error = OidcConstants.ProtectedResourceErrors.InvalidToken,
+                    ErrorDescription = "Token too long"
+                };
+            }
+
+            _log.AccessTokenType = AccessTokenType.Jwt.ToString();
+            result = await ValidateJwtAsync(
+                token,
+                await _keys.GetValidationKeysAsync());
+        }
+        else
+        {
+            if (token.Length > _options.InputLengthRestrictions.TokenHandle)
+            {
+                _logger.LogError("token handle too long");
+
+                return new TokenValidationResult
+                {
+                    IsError = true,
+                    Error = OidcConstants.ProtectedResourceErrors.InvalidToken,
+                    ErrorDescription = "Token too long"
+                };
+            }
+
+            _log.AccessTokenType = AccessTokenType.Reference.ToString();
+            result = await ValidateReferenceAccessTokenAsync(token);
+        }
+
+        _log.Claims = result.Claims.ToClaimsDictionary();
+
+        if (result.IsError)
+        {
+            return result;
+        }
+
+        // make sure client is still active (if client_id claim is present)
+        var clientClaim = result.Claims.FirstOrDefault(c => c.Type == JwtClaimTypes.ClientId);
+        if (clientClaim != null)
+        {
+            var client = await _clients.FindEnabledClientByIdAsync(clientClaim.Value);
+            if (client == null)
+            {
+                _logger.LogError("Client deleted or disabled: {clientId}", clientClaim.Value);
+
+                result.IsError = true;
+                result.Error = OidcConstants.ProtectedResourceErrors.InvalidToken;
+                result.Claims = null;
+
+                return result;
+            }
+        }
+
+        // make sure user is still active (if sub claim is present)
+        var subClaim = result.Claims.FirstOrDefault(c => c.Type == JwtClaimTypes.Subject);
+        if (subClaim != null)
+        {
+            var principal = Principal.Create("tokenvalidator", result.Claims.ToArray());
+
+            if (result.ReferenceTokenId.IsPresent())
+            {
+                principal.Identities.First()
+                    .AddClaim(new Claim(JwtClaimTypes.ReferenceTokenId, result.ReferenceTokenId));
+            }
+
+            var isActiveCtx = new IsActiveContext(principal, result.Client,
+                IdentityServerConstants.ProfileIsActiveCallers.AccessTokenValidation);
+            await _profile.IsActiveAsync(isActiveCtx);
+
+            if (isActiveCtx.IsActive == false)
+            {
+                _logger.LogError("User marked as not active: {subject}", subClaim.Value);
+
+                result.IsError = true;
+                result.Error = OidcConstants.ProtectedResourceErrors.InvalidToken;
+                result.Claims = null;
+
+                return result;
+            }
+
+            var sub = subClaim.Value;
+            var sid = principal.FindFirstValue("sid");
+            if (sid != null)
+            {
+                var sessionResult = await _sessionCoordinationService.ValidateSessionAsync(new SessionValidationRequest
+                {
+                    SubjectId = sub,
+                    SessionId = sid,
+                    Client = result.Client,
+                    Type = SessionValidationType.AccessToken
+                });
+
+                if (!sessionResult)
+                {
+                    _logger.LogError("Server-side session invalid for subject Id {subjectId} and session Id {sessionId}.", sub, sid);
+                    return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+                }
+            }
+        }
+
+        // check expected scope(s)
+        if (expectedScope.IsPresent())
+        {
+            var scope = result.Claims.FirstOrDefault(c =>
+                c.Type == JwtClaimTypes.Scope && c.Value == expectedScope);
+            if (scope == null)
+            {
+                LogError($"Checking for expected scope {expectedScope} failed");
+                return Invalid(OidcConstants.ProtectedResourceErrors.InsufficientScope);
+            }
+        }
+
+        _logger.LogDebug("Calling into custom token validator: {type}", _customValidator.GetType().FullName);
+        var customResult = await _customValidator.ValidateAccessTokenAsync(result);
+
+        if (customResult.IsError)
+        {
+            LogError("Custom validator failed: " + (customResult.Error ?? "unknown"));
+            return customResult;
+        }
+
+        // add claims again after custom validation
+        _log.Claims = customResult.Claims.ToClaimsDictionary();
+
+        LogSuccess();
+        return customResult;
+    }
+
+    private async Task<TokenValidationResult> ValidateJwtAsync(string jwtString,
+        IEnumerable<SecurityKeyInfo> validationKeys, bool validateLifetime = true, string audience = null)
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity("TokenValidator.ValidateJwt");
+        
+        var handler = new JsonWebTokenHandler();
+
+        var parameters = new TokenValidationParameters
+        {
+            ValidIssuer = await _issuerNameService.GetCurrentAsync(),
+            IssuerSigningKeys = validationKeys.Select(k => k.Key),
+            ValidateLifetime = validateLifetime
+        };
+
+        if (audience.IsPresent())
+        {
+            parameters.ValidAudience = audience;
+        }
+        else
+        {
+            parameters.ValidateAudience = false;
+
+            // if no audience is specified, we make at least sure that it is an access token
+            if (_options.AccessTokenJwtType.IsPresent())
+            {
+                parameters.ValidTypes = new[] { _options.AccessTokenJwtType };
+            }
+        }
+            
+        var result = await handler.ValidateTokenAsync(jwtString, parameters);
+        if (!result.IsValid)
+        {
+            if (result.Exception is SecurityTokenExpiredException expiredException)
+            {
+                _logger.LogInformation(expiredException, "JWT token validation error: {exception}",
+                    expiredException.Message);
+                return Invalid(OidcConstants.ProtectedResourceErrors.ExpiredToken);
+            }
+            else
+            {
+                _logger.LogError(result.Exception, "JWT token validation error: {exception}",
+                    result.Exception.Message);
+                return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+            }
+        }
+
+        var id = result.ClaimsIdentity;
+
+        // if access token contains an ID, log it
+        var jwtId = id.FindFirst(JwtClaimTypes.JwtId);
+        if (jwtId != null)
+        {
+            _log.JwtId = jwtId.Value;
+        }
+
+        // load the client that belongs to the client_id claim
+        Client client = null;
+        var clientId = id.FindFirst(JwtClaimTypes.ClientId);
+        if (clientId != null)
+        {
+            client = await _clients.FindEnabledClientByIdAsync(clientId.Value);
+            if (client == null)
+            {
+                LogError($"Client deleted or disabled: {clientId}");
+                return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+            }
+        }
+
+        var claims = id.Claims.ToList();
+
+        // check the scope format (array vs space delimited string)
+        var scopes = claims.Where(c => c.Type == JwtClaimTypes.Scope).ToArray();
+        if (scopes.Any())
+        {
+            foreach (var scope in scopes)
+            {
+                if (scope.Value.Contains(" "))
+                {
+                    claims.Remove(scope);
+
+                    var values = scope.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var value in values)
+                    {
+                        claims.Add(new Claim(JwtClaimTypes.Scope, value));
+                    }
+                }
+            }
+        }
+
+        return new TokenValidationResult
+        {
+            IsError = false,
+
+            Claims = claims,
+            Client = client,
+            Jwt = jwtString
+        };
+    }
+
+    private async Task<TokenValidationResult> ValidateReferenceAccessTokenAsync(string tokenHandle)   // <---------------------itp, tokenHandle is same as reference-type access key
+    {
+        using var activity = Tracing.BasicActivitySource.StartActivity("TokenValidator.ValidateReferenceAccessToken");
+        
+        _log.TokenHandle = tokenHandle;
+        var token = await _referenceTokenStore.GetReferenceTokenAsync(tokenHandle);  // <---------------------itp
+        //  token contains the claims such as { "role" : "payinguser" }
+
+        if (token == null)
+        {
+            LogError("Invalid reference token.");
+            return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+        }
+
+        if (token.CreationTime.HasExceeded(token.Lifetime, _clock.UtcNow.UtcDateTime))
+        {
+            LogError("Token expired.");
+
+            await _referenceTokenStore.RemoveReferenceTokenAsync(tokenHandle);
+            return Invalid(OidcConstants.ProtectedResourceErrors.ExpiredToken);
+        }
+
+        // load the client that is defined in the token
+        Client client = null;
+        if (token.ClientId != null)
+        {
+            client = await _clients.FindEnabledClientByIdAsync(token.ClientId);
+        }
+
+        if (client == null)
+        {
+            LogError($"Client deleted or disabled: {token.ClientId}");
+            return Invalid(OidcConstants.ProtectedResourceErrors.InvalidToken);
+        }
+
+        return new TokenValidationResult
+        {
+            IsError = false,
+
+            Client = client,
+            Claims = ReferenceTokenToClaims(token),
+            ReferenceToken = token,
+            ReferenceTokenId = tokenHandle
+        };
+    }
+
+    private IEnumerable<Claim> ReferenceTokenToClaims(Token token)
+    {
+        var claims = new List<Claim>
+        {
+            new Claim(JwtClaimTypes.Issuer, token.Issuer),
+            new Claim(JwtClaimTypes.NotBefore,
+                new DateTimeOffset(token.CreationTime).ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64),
+            new Claim(JwtClaimTypes.IssuedAt, new DateTimeOffset(token.CreationTime).ToUnixTimeSeconds().ToString(),
+                ClaimValueTypes.Integer64),
+            new Claim(JwtClaimTypes.Expiration,
+                new DateTimeOffset(token.CreationTime).AddSeconds(token.Lifetime).ToUnixTimeSeconds().ToString(),
+                ClaimValueTypes.Integer64)
+        };
+
+        if (!String.IsNullOrEmpty(token.Confirmation))
+        {
+            claims.Add(new Claim(JwtClaimTypes.Confirmation, token.Confirmation, IdentityServerConstants.ClaimValueTypes.Json));
+        }
+
+        foreach (var aud in token.Audiences)
+        {
+            claims.Add(new Claim(JwtClaimTypes.Audience, aud));
+        }
+
+        claims.AddRange(token.Claims);
+        return claims;
+    }
+
+    private string GetClientIdFromJwt(string token)
+    {
+        try
+        {
+            var jwt = new JwtSecurityToken(token);
+            var clientId = jwt.Audiences.FirstOrDefault();
+
+            return clientId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Malformed JWT token: {exception}", ex.Message);
+            return null;
+        }
+    }
+}
+//---------------------------Ʌ
+
 //-------------------------------V
 public class DefaultGrantStore<T>
 {
@@ -4291,8 +4869,8 @@ public class DefaultRefreshTokenStore : DefaultGrantStore<RefreshToken>, IRefres
 
 ```C#
 //------------------------------>>
-public interface IProfileService
-{
+public interface IProfileService  // the purpose of IProfileService is to allow "UserStore" such as TestUserStore or LocalUserService to return more user data from UserInfo endpoint
+{                                 // as we normally don't want the cookie to become too big and only includes essential claims in the cookie, and let user decide whether to call UserInfo
     Task GetProfileDataAsync(ProfileDataRequestContext context);
     Task IsActiveAsync(IsActiveContext context);
 }
@@ -4325,9 +4903,7 @@ public class DefaultProfileService : IProfileService
     public DefaultProfileService(ILogger<DefaultProfileService> logger) { Logger = logger; }
 
     public virtual Task GetProfileDataAsync(ProfileDataRequestContext context)
-    {
-        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultProfileService.GetProfileData");
-        
+    {        
         context.LogProfileRequest(Logger);
         context.AddRequestedClaims(context.Subject.Claims);
         context.LogIssuedClaims(Logger);
@@ -4336,18 +4912,14 @@ public class DefaultProfileService : IProfileService
     }
 
     public virtual Task IsActiveAsync(IsActiveContext context)
-    {
-        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultProfileService.IsActive");
-        
-        Logger.LogDebug("IsActive called from: {caller}", context.Caller);
-
+    {        
         context.IsActive = true;
         return Task.CompletedTask;
     }
 }
 //--------------------------------Ʌ
 
-//---------------------------------V a wrapper of "TestUserStore"/"XXXUserStore"?
+//---------------------------------V
 public class TestUserProfileService : IProfileService
 {
     protected readonly ILogger Logger;
@@ -4884,6 +5456,182 @@ public class DefaultConsentService : IConsentService
 //--------------------------------Ʌ
 ```
 
+```C#
+//------------------------------------------------V
+public interface IIdentityServerInteractionService
+{
+    Task<AuthorizationRequest?> GetAuthorizationContextAsync(string? returnUrl);
+    bool IsValidReturnUrl(string? returnUrl);
+    Task<ErrorMessage?> GetErrorContextAsync(string? errorId);
+    Task<LogoutRequest> GetLogoutContextAsync(string? logoutId);
+    Task<string?> CreateLogoutContextAsync();
+    Task GrantConsentAsync(AuthorizationRequest request, ConsentResponse consent, string? subject = null);
+    Task DenyAuthorizationAsync(AuthorizationRequest request, AuthorizationError error, string? errorDescription = null);
+    Task<IEnumerable<Grant>> GetAllUserGrantsAsync();
+    Task RevokeUserConsentAsync(string? clientId);
+    Task RevokeTokensForCurrentSessionAsync();
+}
+//------------------------------------------------Ʌ
+
+//----------------------------------------------------V
+internal class DefaultIdentityServerInteractionService : IIdentityServerInteractionService
+{
+    private readonly IClock _clock;
+    private readonly IHttpContextAccessor _context;
+    private readonly IMessageStore<LogoutMessage> _logoutMessageStore;
+    private readonly IMessageStore<ErrorMessage> _errorMessageStore;
+    private readonly IConsentMessageStore _consentMessageStore;
+    private readonly IPersistedGrantService _grants;
+    private readonly IUserSession _userSession;
+    private readonly ILogger _logger;
+    private readonly ReturnUrlParser _returnUrlParser;
+
+    public DefaultIdentityServerInteractionService(
+        IClock clock,
+        IHttpContextAccessor context,
+        IMessageStore<LogoutMessage> logoutMessageStore,
+        IMessageStore<ErrorMessage> errorMessageStore,
+        IConsentMessageStore consentMessageStore,
+        IPersistedGrantService grants,
+        IUserSession userSession,
+        ReturnUrlParser returnUrlParser,
+        ILogger<DefaultIdentityServerInteractionService> logger)
+    {
+        // ...
+    }
+
+    public async Task<AuthorizationRequest> GetAuthorizationContextAsync(string returnUrl)
+    {        
+        var result = await _returnUrlParser.ParseAsync(returnUrl);
+
+        if (result != null)
+        {
+            _logger.LogTrace("AuthorizationRequest being returned");
+        }
+        else
+        {
+            _logger.LogTrace("No AuthorizationRequest being returned");
+        }
+
+        return result;
+    }
+
+    public async Task<LogoutRequest> GetLogoutContextAsync(string logoutId)
+    {        
+        var msg = await _logoutMessageStore.ReadAsync(logoutId);
+        var iframeUrl = await _context.HttpContext.GetIdentityServerSignoutFrameCallbackUrlAsync(msg?.Data);
+        return new LogoutRequest(iframeUrl, msg?.Data);
+    }
+
+    public async Task<string> CreateLogoutContextAsync()
+    {        
+        var user = await _userSession.GetUserAsync();
+        if (user != null)
+        {
+            var clientIds = await _userSession.GetClientListAsync();
+            if (clientIds.Any())
+            {
+                var sid = await _userSession.GetSessionIdAsync();
+                var msg = new Message<LogoutMessage>(new LogoutMessage
+                {
+                    SubjectId = user?.GetSubjectId(),
+                    SessionId = sid,
+                    ClientIds = clientIds
+                }, _clock.UtcNow.UtcDateTime);
+                var id = await _logoutMessageStore.WriteAsync(msg);
+                return id;
+            }
+        }
+
+        return null;
+    }
+
+    public async Task<ErrorMessage> GetErrorContextAsync(string errorId)
+    {        
+        if (errorId != null)
+        { 
+            var result = await _errorMessageStore.ReadAsync(errorId);
+            var data = result?.Data;
+           
+            return data;
+        }
+
+        return null;
+    }
+
+    public async Task GrantConsentAsync(AuthorizationRequest request, ConsentResponse consent, string subject = null)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultIdentityServerInteractionService.GrantConsent");
+        
+        if (subject == null)
+        {
+            var user = await _userSession.GetUserAsync();
+            subject = user?.GetSubjectId();
+        }
+
+        if (subject == null && consent.Granted)
+        {
+            throw new ArgumentNullException(nameof(subject), "User is not currently authenticated, and no subject id passed");
+        }
+
+        var consentRequest = new ConsentRequest(request, subject);
+        await _consentMessageStore.WriteAsync(consentRequest.Id, new Message<ConsentResponse>(consent, _clock.UtcNow.UtcDateTime));
+    }
+
+    public Task DenyAuthorizationAsync(AuthorizationRequest request, AuthorizationError error, string errorDescription = null)
+    {
+        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultIdentityServerInteractionService.DenyAuthorization");
+        
+        var response = new ConsentResponse 
+        {
+            Error = error,
+            ErrorDescription = errorDescription
+        };
+        return GrantConsentAsync(request, response);
+    }
+
+    public bool IsValidReturnUrl(string returnUrl)
+    {        
+        var result = _returnUrlParser.IsValidReturnUrl(returnUrl);
+
+        return result;
+    }
+
+    public async Task<IEnumerable<Grant>> GetAllUserGrantsAsync()
+    {        
+        var user = await _userSession.GetUserAsync();
+        if (user != null)
+        {
+            var subject = user.GetSubjectId();
+            return await _grants.GetAllGrantsAsync(subject);
+        }
+
+        return Enumerable.Empty<Grant>();
+    }
+
+    public async Task RevokeUserConsentAsync(string clientId)
+    {    
+        var user = await _userSession.GetUserAsync();
+        if (user != null)
+        {
+            var subject = user.GetSubjectId();
+            await _grants.RemoveAllGrantsAsync(subject, clientId);
+        }
+    }
+
+    public async Task RevokeTokensForCurrentSessionAsync()
+    {        
+        var user = await _userSession.GetUserAsync();
+        if (user != null)
+        {
+            var subject = user.GetSubjectId();
+            var sessionId = await _userSession.GetSessionIdAsync();
+            await _grants.RemoveAllGrantsAsync(subject, sessionId: sessionId);
+        }
+    }
+}
+//----------------------------------------------------Ʌ
+```
 
 
 ## Razor Page (created by template)
