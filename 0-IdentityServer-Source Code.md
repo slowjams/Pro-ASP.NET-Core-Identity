@@ -812,9 +812,9 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
     {
         Logger.LogDebug("Creating Authorization Code Flow response.");
 
-        var code = await CreateCodeAsync(request);  // <----------------------c2.5.
-        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);
-
+        var code = await CreateCodeAsync(request);  // <----------------------c2.5.  code contain user info
+        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);  // id might be the key for idp's internal database to local user when receiving
+                                                                                  // https://localhost:7184/signin-oidc POST
         var response = new AuthorizeResponse
         {
             Issuer = request.IssuerName,

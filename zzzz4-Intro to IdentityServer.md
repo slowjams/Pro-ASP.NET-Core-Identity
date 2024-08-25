@@ -216,7 +216,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request from client to user using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request from client to user using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -1010,6 +1010,7 @@ public class IdentityServerProgram
 
         builder.Services.AddRazorPages();
 
+        builder.Services.AddScoped<IPasswordHasher<Entities.User>, PasswordHasher<Entities.User>>();
         builder.Services.AddScoped<ILocalUserService, LocalUserService>();
 
         builder.Services.AddDbContext<IdentityDbContext>(options =>
@@ -1441,7 +1442,8 @@ public interface ILocalUserService
     Task<IEnumerable<UserClaim>> GetUserClaimsBySubjectAsync(string subject);
     Task<User> GetUserByUserNameAsync(string userName);
     Task<User> GetUserBySubjectAsync(string subject);
-    void AddUser(User userToAdd);
+    void AddUser(User userToAdd, string password);
+    Task<bool> ActivateUserAsync(string securityCode);
     Task<bool> IsUserActive(string subject);
     Task<bool> SaveChangesAsync();
 }
@@ -1449,100 +1451,176 @@ public interface ILocalUserService
 public class LocalUserService : ILocalUserService
 {
     private readonly IdentityDbContext _context;
+    private readonly IPasswordHasher<User> _passwordHasher;
 
-    public LocalUserService(IdentityDbContext context)
+    public LocalUserService(
+        IdentityDbContext context,
+        IPasswordHasher<User> passwordHasher)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
+        _passwordHasher = passwordHasher ?? throw new ArgumentNullException(nameof(passwordHasher));
     }
+
 
     public async Task<bool> IsUserActive(string subject)
     {
+        if (string.IsNullOrWhiteSpace(subject))
+        {
+            return false;
+        }
+
         var user = await GetUserBySubjectAsync(subject);
 
         if (user == null)
+        {
             return false;
+        }
 
         return user.Active;
     }
 
-    public async Task<bool> ValidateCredentialsAsync(string userName, string password)
+    public async Task<bool> ValidateCredentialsAsync(string userName,
+      string password)
     {
-        if (string.IsNullOrWhiteSpace(userName) || string.IsNullOrWhiteSpace(password))
+        if (string.IsNullOrWhiteSpace(userName) ||
+            string.IsNullOrWhiteSpace(password))
+        {
             return false;
+        }
 
         var user = await GetUserByUserNameAsync(userName);
 
         if (user == null)
+        {
             return false;
+        }
 
         if (!user.Active)
+        {
             return false;
+        }
 
         // Validate credentials
-        return (user.Password == password);
-    } 
+        // return (user.Password == password);
+
+        /*
+          note that the default implementation does not use the `user` parameter. That is because users can be represented differently in various systems.
+          however, in custom implementations of the IPasswordHasher<TUser> interface, user details could be incorporated into the hashing process.
+        */
+        var verificationResult = 
+            _passwordHasher.VerifyHashedPassword(user, user.Password, password);// user.Password is the hash password store in database, password is the provided password
+                                                                                //passwordHasher needs it  to retrieve salt which is noramlly appended to the hash password
+
+        /* prerequsite: salt, salt is randomly generated for each user appended to the hashed password
+
+           UserA:
+
+           Password: farm1990M0O
+
+           Salt: f1nd1ngn3m0
+
+           Salted input: farm1990M0Of1nd1ngn3m0
+
+           Hash (SHA-256): 07dbb6e6832da0841dd79701200e4b179f1a94a7b3dd26f612817f3c03117434f1nd1ngn3m0
+
+           UserB:
+
+           Password: farm1990M0O
+
+           Salt: f1nd1ngd0ry
+
+           Salted input: farm1990M0Of1nd1ngd0ry
+
+           Hash (SHA-256): 11c150eb6c1b776f390be60a0a5933a2a2f8c0a0ce766ed92fea5bfd9313c8f6f1nd1ngd0ry
+
+           * Note that UserA and UserB use same password but hashed password are still different
+        */
+
+        return (verificationResult == PasswordVerificationResult.Success);
+    }
+
 
     public async Task<User> GetUserByUserNameAsync(string userName)
-    {      
+    {
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            throw new ArgumentNullException(nameof(userName));
+        }
+
         return await _context.Users
-                .FirstOrDefaultAsync(u => u.UserName == userName);
+             .FirstOrDefaultAsync(u => u.UserName == userName);
     }
 
     public async Task<IEnumerable<UserClaim>> GetUserClaimsBySubjectAsync(string subject)
     {
+        if (string.IsNullOrWhiteSpace(subject))
+        {
+            throw new ArgumentNullException(nameof(subject));
+        }
+
         return await _context.UserClaims.Where(u => u.User.Subject == subject).ToListAsync();
     }
 
     public async Task<User> GetUserBySubjectAsync(string subject)
     {
+        if (string.IsNullOrWhiteSpace(subject))
+        {
+            throw new ArgumentNullException(nameof(subject));
+        }
+
         return await _context.Users.FirstOrDefaultAsync(u => u.Subject == subject);
     }
 
-    public void AddUser(User userToAdd)
+    public void AddUser(User userToAdd, string password)
     {
-        if (_context.Users.Any(u => u.UserName == userToAdd.UserName))
-            // in a real-life scenario you'll probably want to return this as a validation issue
-            throw new Exception("Username must be unique");
+        if (userToAdd == null)
+        {
+            throw new ArgumentNullException(nameof(userToAdd));
+        }
 
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            throw new ArgumentNullException(nameof(password));
+        }
+
+        if (_context.Users.Any(u => u.Email == userToAdd.Email))
+        {
+            throw new Exception("Email must be unique");
+        }
+
+        // hash & salt the password
+        userToAdd.Password = _passwordHasher.HashPassword(userToAdd, password);
+        userToAdd.SecurityCode = Convert.ToBase64String(RandomNumberGenerator.GetBytes(128));
+        userToAdd.SecurityCodeExpirationDate = DateTime.UtcNow.AddHours(1);
         _context.Users.Add(userToAdd);
+    }
+
+    public async Task<bool> ActivateUserAsync(string securityCode)
+    {
+        if (string.IsNullOrWhiteSpace(securityCode))
+        {
+            throw new ArgumentNullException(nameof(securityCode));
+        }
+
+        // find an user with this security code as an active security code.  
+        var user = await _context.Users.FirstOrDefaultAsync(u =>
+            u.SecurityCode == securityCode &&
+            u.SecurityCodeExpirationDate >= DateTime.UtcNow);
+
+        if (user == null)
+        {
+            return false;
+        }
+
+        user.Active = true;
+        user.SecurityCode = null;
+        return true;
     }
 
 
     public async Task<bool> SaveChangesAsync()
     {
         return (await _context.SaveChangesAsync() > 0);
-    }
-}
-//--------------------------------Ʌ
-
-//----------------------------------V
-public class LocalUserProfileService : IProfileService
-{
-    private readonly ILocalUserService _localUserService;
-
-    public LocalUserProfileService(ILocalUserService localUserService)
-    {
-        _localUserService = localUserService ??
-            throw new ArgumentNullException(nameof(localUserService));
-    }
-
-    public async Task GetProfileDataAsync(ProfileDataRequestContext context)
-    {
-        var subjectId = context.Subject.GetSubjectId();
-        var claimsForUser = (await _localUserService
-            .GetUserClaimsBySubjectAsync(subjectId))
-            .ToList();
-
-        context.AddRequestedClaims(
-            claimsForUser.Select(c => new Claim(c.Type, c.Value)).ToList());
-
-    }
-
-    public async Task IsActiveAsync(IsActiveContext context)
-    {
-        var subjectId = context.Subject.GetSubjectId();
-
-        context.IsActive = await _localUserService.IsUserActive(subjectId);
     }
 }
 //----------------------------------Ʌ
@@ -1769,4 +1847,103 @@ public class Index : PageModel
     }
 }
 //----------------------------Ʌ
+
+//---------------------V Registration Razor Page
+[SecurityHeaders]
+[AllowAnonymous]
+public class IndexModel : PageModel
+{
+    private readonly ILocalUserService _localUserService;
+    private readonly IIdentityServerInteractionService _interaction;
+
+    [BindProperty]
+    public InputModel Input { get; set; }
+
+
+    public IndexModel(
+        ILocalUserService localUserService,
+        IIdentityServerInteractionService interaction)
+    {
+        _localUserService = localUserService ??
+            throw new ArgumentNullException(nameof(localUserService));
+        _interaction = interaction ??
+            throw new ArgumentNullException(nameof(interaction));
+    }
+
+    public IActionResult OnGet(string returnUrl)
+    {
+        BuildModel(returnUrl);
+        return Page();
+    }
+
+    public async Task<IActionResult> OnPost()
+    {
+        if (!ModelState.IsValid)
+        {
+            // something went wrong, show form with error
+            BuildModel(Input.ReturnUrl);
+            return Page();
+        }
+
+        // create user & claims
+        var userToCreate = new Entities.User
+        {
+            UserName = Input.UserName,
+            Subject = Guid.NewGuid().ToString(),
+            Email = Input.Email,
+            Active = false
+        };
+
+        userToCreate.Claims.Add(new Entities.UserClaim()
+        {
+            Type = "country",
+            Value = Input.Country
+        });
+
+        userToCreate.Claims.Add(new Entities.UserClaim()
+        {
+            Type = JwtClaimTypes.GivenName,
+            Value = Input.GivenName
+        });
+
+        userToCreate.Claims.Add(new Entities.UserClaim()
+        {
+            Type = JwtClaimTypes.FamilyName,
+            Value = Input.FamilyName
+        });
+
+        _localUserService.AddUser(userToCreate, Input.Password);
+        await _localUserService.SaveChangesAsync();
+
+        // mock emailing user with active code bt creating an activation link and
+        // we need an absolute URL, thereforewe use Url.PageLink instead of Url.Page
+        var activationLink = Url.PageLink("/user/activation/index",  // <------------https://localhost:5001/User/Activation?securityCode=QwB6XjaepB%2BdOcyxWd4CdMpxxxx
+            values: new { securityCode = userToCreate.SecurityCode });
+
+        Console.WriteLine($"Activation link: {activationLink}");
+        return Redirect("~/User/ActivationCodeSent");
+
+        //// Issue authentication cookie (log the user in) <--------------------we don't want to log user in anymore after we introduce the activation code
+        //var isUser = new IdentityServerUser(userToCreate.Subject)
+        //{
+        //    DisplayName = userToCreate.UserName
+        //};
+        //await HttpContext.SignInAsync(isUser);
+
+        //// continue with the flow     
+        //if (_interaction.IsValidReturnUrl(Input.ReturnUrl) || Url.IsLocalUrl(Input.ReturnUrl))
+        //{
+        //    return Redirect(Input.ReturnUrl);
+        //}          
+    }
+
+    private void BuildModel(string returnUrl)
+    {
+        Input = new InputModel
+        {
+            ReturnUrl = returnUrl
+        };
+    }
+}
+//---------------------Ʌ
 ```
