@@ -158,7 +158,7 @@ public static class IdentityServerServiceCollectionExtensions
  
         builder
             .AddRequiredPlatformServices()
-            .AddCookieAuthentication()
+            .AddCookieAuthentication()  // <--------------------------------------!
             .AddCoreServices()
             .AddDefaultEndpoints()
             .AddPluggableServices()

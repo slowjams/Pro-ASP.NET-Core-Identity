@@ -1124,7 +1124,7 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
     public virtual Task<bool> ShouldHandleRequestAsync()
         => Task.FromResult(Options.CallbackPath == Request.Path);   // CallbackPath is "signin-google"
 
-    public virtual async Task<bool> HandleRequestAsync()  //<-------------------------------e2, intercept the request after users sign in
+    public virtual async Task<bool> HandleRequestAsync()  //<-------------------------------e2, intercept the /signin-google request after users sign in
     {
         if (!await ShouldHandleRequestAsync())  // <--------------------------e2.1
             return false;
@@ -1206,7 +1206,9 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
             }
         }
  
-        // SignInScheme is "Identity.External" which will be handled by cookie handler which serilize the ticket into cookie for the next redirect request
+        // SignInScheme is "Identity.External" which will be handled by CookieAuthenticationHandler which serilize the ticket into cookie for the next redirect request
+        // normally CookieAuthenticationHandler is registered via idp registration calls like  `builder.Services.AddIdentityServer()` on IDP's end where AddIdentityServer
+        // internally calls AddCookieAuthentication(), check Marvin.IDP.HostingExtensions for example
         await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);  // <------------------e4
         /* ticketContext.Properties.Properties.Items contains:       
             [LoginProvider, Google]
@@ -1357,7 +1359,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
 
     protected override Task<object> CreateEventsAsync() => Task.FromResult<object>(new OAuthEvents());
 
-    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()  // <------------------------e3.0
+    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()  // <------------------------e3.0, handles https://localhost:xxx/signin-google
     {
         var query = Request.Query;
  
@@ -1465,7 +1467,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
     {
         var tokenRequestParameters = new Dictionary<string, string>()
         {
-            { "client_id", Options.ClientId },
+            { "client_id", Options.ClientId },   // ClientId is the "AppId" you registered on google developer for its app
             { "redirect_uri", context.RedirectUri },
             { "client_secret", Options.ClientSecret },   // <---------------pass secret now
             { "code", context.Code },

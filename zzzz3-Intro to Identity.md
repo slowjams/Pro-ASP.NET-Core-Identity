@@ -2051,6 +2051,7 @@ public class ExternalSignInModel : PageModel  // when user click "SignIn Externa
         AuthenticationProperties properties = SignInManager.ConfigureExternalAuthenticationProperties(providerName, redirectUrl);  // <-----------------e1.1
 
         return new ChallengeResult(providerName, properties);  // <-----------------e1.2. providerName will be used as scheme name, check ChallengeResult.ExecuteResultAsync()
+                                                               // which internally calls httpContext.ChallengeAsync(...);
     }
 
     // this is the "Correlate" phrase in external authentication that "correlate" external users info with application's local user info
@@ -2221,7 +2222,7 @@ public class ExternalAuthHandler : IAuthenticationRequestHandler  // <----------
                     await Context.SignInAsync(IdentityConstants.ExternalScheme, claimsPrincipal, props);  // <--------------------------------------! ee6, 
                     // call Context.SignInAsync here, which invoke CookieAuthenticationHandler.HandleSignInAsync to generate ticket cookie so user state can persist in next request
                                                                                                           
-                    Context.Response.Redirect(props.RedirectUri);   // RedirectUri is ExternalSignIn?returnUrl=secret%2F&handler=Correlate.
+                    Context.Response.Redirect(props.RedirectUri);   // <-----------------RedirectUri is ExternalSignIn?returnUrl=secret%2F&handler=Correlate.
                                                                     // now users can access and redirect on the secret page (assuming users first access the secret page)
                     return true;
                 }

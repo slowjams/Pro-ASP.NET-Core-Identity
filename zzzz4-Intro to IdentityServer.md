@@ -216,7 +216,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request from client to user using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request from user to client using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -231,7 +231,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** (o5.0) before redirecting users to its original request e.g home/index
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code generated previously (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** (o5.0) before redirecting users to its original request e.g home/index
 Note that cookie can be:
 
 **A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end), so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
@@ -997,6 +997,245 @@ public class ApiResource : Resource
 ```
 
 ===================================================================================================================================
+
+
+## Integration with Third-Party Identity Provider
+
+let's integrate identity server with Facebook. This time, our IDP (Marvin.IDP) becomes "Client",  Facebook is the "IDP"
+
+```C#
+//-------------------------------------------V idp
+builder.Services.AddIdentityServer(options =>   // <----------------------calls AddCookieAuthentication()
+{
+    // ...
+})
+
+builder.Services.AddAuthentication().AddFacebook("Facebook", options =>
+{
+        options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;  // <-------------------itp0
+        options.AppId = "123456789";
+        options.AppSecret = "ff5bexxxxx";
+});
+//-------------------------------------------Ʌ
+
+
+//-------------------------------------------V
+// Pages/Account/Login/Index.cshtml
+@if (Model.View.VisibleExternalProviders.Any())
+{
+    <div class="col-sm-6">
+        <div class="card">
+            <div class="card-header">
+                <h2>External Account</h2>
+            </div>
+            <div class="card-body">
+                <ul class="list-inline">
+                    @foreach (var provider in Model.View.VisibleExternalProviders)
+                    {
+                        <a class="btn btn-secondary"
+                            asp-page="/ExternalLogin/Challenge"    // <-------------------itp1.0
+                            asp-route-scheme="@provider.AuthenticationScheme"
+                            asp-route-returnUrl="@Model.Input.ReturnUrl">
+                            @provider.DisplayName
+                        </a>
+                    }
+                </ul>
+            </div>
+        </div>
+    </div>
+}
+//-------------------------------------------Ʌ
+
+//-------------------------------------V Pages/ExternalLogin/Challenge.cshtml
+public class Challenge : PageModel
+{
+    private readonly IIdentityServerInteractionService _interactionService;
+
+    public Challenge(IIdentityServerInteractionService interactionService)
+    {
+        _interactionService = interactionService;
+    }
+        
+    public IActionResult OnGet(string scheme, string? returnUrl)   // returnUrl is /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https
+    {
+        if (string.IsNullOrEmpty(returnUrl)) returnUrl = "~/";
+
+        // validate returnUrl - either it is a valid OIDC URL or back to a local page
+        if (Url.IsLocalUrl(returnUrl) == false && _interactionService.IsValidReturnUrl(returnUrl) == false)
+        {
+            // user might have clicked on a malicious link - should be logged
+            throw new ArgumentException("invalid return URL");
+        }
+            
+        // start challenge and roundtrip the return URL and scheme 
+        var props = new AuthenticationProperties
+        {
+            RedirectUri = Url.Page("/externallogin/callback"),  // <------------like ExternalSignInModel.OnGetCorrelate
+                
+            Items =
+            {
+                { "returnUrl", returnUrl }, 
+                { "scheme", scheme },
+            }
+        };
+
+        return Challenge(props, scheme);   // <-------------------itp1.1. Behind the scene, ChallengeResult.ExecuteResultAsync() which internally calls httpContext.ChallengeAsync(...);
+                                           // jump to FacebookHandler -> OAuthHandler.HandleChallengeAsync for reference
+    }
+}
+//-------------------------------------Ʌ
+
+//------------------------------------V Pages/ExternalLogin/Callback.cshtml
+public class Callback : PageModel
+{
+    //private readonly TestUserStore _users;
+    private readonly IIdentityServerInteractionService _interaction;
+    private readonly ILogger<Callback> _logger;
+    private readonly IEventService _events;
+
+    public Callback(
+        IIdentityServerInteractionService interaction,
+        IEventService events,
+        ILogger<Callback> logger)
+    {
+        // this is where you would plug in your own custom identity management library (e.g. ASP.NET Identity)
+        // _users = users ?? throw new InvalidOperationException("Please call 'AddTestUsers(TestUsers.Users)' on the IIdentityServerBuilder in Startup or remove the TestUserStore from the AccountController.");
+
+        _interaction = interaction;
+        _logger = logger;
+        _events = events;
+    }
+        
+    public async Task<IActionResult> OnGet()
+    {
+        // read external identity from the temporary cookie
+        var result = await HttpContext.AuthenticateAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme);
+        if (result.Succeeded != true)
+        {
+            throw new InvalidOperationException($"External authentication error: { result.Failure }");
+        }
+
+        var externalUser = result.Principal ?? 
+            throw new InvalidOperationException("External authentication produced a null Principal");
+		
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            var externalClaims = externalUser.Claims.Select(c => $"{c.Type}: {c.Value}");
+            _logger.ExternalClaims(externalClaims);
+        }
+
+        // lookup our user and external provider info
+        // try to determine the unique id of the external user (issued by the provider)
+        // the most common claim type for that are the sub claim and the NameIdentifier
+        // depending on the external provider, some other claim type might be used
+        var userIdClaim = externalUser.FindFirst(JwtClaimTypes.Subject) ??
+                          externalUser.FindFirst(ClaimTypes.NameIdentifier) ??
+                          throw new InvalidOperationException("Unknown userid");
+
+        var provider = result.Properties.Items["scheme"] ?? throw new InvalidOperationException("Null scheme in authentiation properties");
+        var providerUserId = userIdClaim.Value;
+
+        /*
+        // find external user
+        var user = _users.FindByExternalProvider(provider, providerUserId);
+        if (user == null)
+        {
+            // this might be where you might initiate a custom workflow for user registration
+            // in this sample we don't show how that would be done, as our sample implementation
+            // simply auto-provisions new external user
+            //
+            // remove the user id claim so we don't include it as an extra claim if/when we provision the user
+            var claims = externalUser.Claims.ToList();
+            claims.Remove(userIdClaim);
+            user = _users.AutoProvisionUser(provider, providerUserId, claims.ToList());
+        }
+        */
+
+        // this allows us to collect any additional claims or properties
+        // for the specific protocols used and store them in the local auth cookie.
+        // this is typically used to store data needed for signout from those protocols.
+        var additionalLocalClaims = new List<Claim>();
+        var localSignInProps = new AuthenticationProperties();
+        CaptureExternalLoginContext(result, additionalLocalClaims, localSignInProps);
+            
+        // issue authentication cookie for user
+        var isuser = new IdentityServerUser(providerUserId)
+        {
+            DisplayName = providerUserId,
+            IdentityProvider = provider,
+            AdditionalClaims = additionalLocalClaims
+        };
+
+        await HttpContext.SignInAsync(isuser, localSignInProps);
+
+        // delete temporary cookie used during external authentication
+        await HttpContext.SignOutAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme);
+
+        // retrieve return URL
+        var returnUrl = result.Properties.Items["returnUrl"] ?? "~/";
+
+        // check if external login is in the context of an OIDC request
+        var context = await _interaction.GetAuthorizationContextAsync(returnUrl);
+        await _events.RaiseAsync(new UserLoginSuccessEvent(provider, providerUserId, providerUserId, providerUserId, true, context?.Client.ClientId));
+        Telemetry.Metrics.UserLogin(context?.Client.ClientId, provider!);
+
+        if (context != null)
+        {
+            if (context.IsNativeClient())
+            {
+                // The client is native, so this change in how to
+                // return the response is for better UX for the end user.
+                return this.LoadingPage(returnUrl);
+            }
+        }
+
+        return Redirect(returnUrl);
+    }
+
+    // if the external login is OIDC-based, there are certain things we need to preserve to make logout work
+    // this will be different for WS-Fed, SAML2p or other protocols
+    private static void CaptureExternalLoginContext(AuthenticateResult externalResult, List<Claim> localClaims, AuthenticationProperties localSignInProps)
+    {
+        ArgumentNullException.ThrowIfNull(externalResult.Principal, nameof(externalResult.Principal));
+
+        // capture the idp used to login, so the session knows where the user came from
+        localClaims.Add(new Claim(JwtClaimTypes.IdentityProvider, externalResult.Properties?.Items["scheme"] ?? "unknown identity provider"));
+
+        // if the external system sent a session id claim, copy it over
+        // so we can use it for single sign-out
+        var sid = externalResult.Principal.Claims.FirstOrDefault(x => x.Type == JwtClaimTypes.SessionId);
+        if (sid != null)
+        {
+            localClaims.Add(new Claim(JwtClaimTypes.SessionId, sid.Value));
+        }
+
+        // if the external provider issued an id_token, we'll keep it for signout
+        var idToken = externalResult.Properties?.GetTokenValue("id_token");
+        if (idToken != null)
+        {
+            localSignInProps.StoreTokens(new[] { new AuthenticationToken { Name = "id_token", Value = idToken } });
+        }
+    }
+}
+//------------------------------------Ʌ
+```
+
+Let's see the difference between oidc flow and third-party integration flow
+
+```C#
+public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHandler<TOptions>, IAuthenticationRequestHandler;
+
+//-------------------------------V
+public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOptions>, IAuthenticationSignOutHandler;
+//-------------------------------Ʌ
+
+//---------------------------------V
+public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions>;
+public class FacebookHandler : OAuthHandler<FacebookOptions>
+//---------------------------------Ʌ
+```
+
+=========================================================================================================================
 
 ## Full Sample Code
 
