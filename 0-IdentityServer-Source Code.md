@@ -217,7 +217,7 @@ public static class IdentityServerBuilderExtensionsCore
         builder.Services
             .AddAuthentication(IdentityServerConstants.DefaultCookieAuthenticationScheme)  // AddAuthentication is from Microsoft which indirectly call AddAuthenticationCore()
             .AddCookie(IdentityServerConstants.DefaultCookieAuthenticationScheme)
-            .AddCookie(IdentityServerConstants.ExternalCookieAuthenticationScheme);
+            .AddCookie(IdentityServerConstants.ExternalCookieAuthenticationScheme);  // <--------------------------------------itpc
  
         builder.Services.AddSingleton<IConfigureOptions<CookieAuthenticationOptions>, ConfigureInternalCookieOptions>();
         builder.Services.AddSingleton<IPostConfigureOptions<CookieAuthenticationOptions>, PostConfigureInternalCookieOptions>();
@@ -690,7 +690,7 @@ internal class AuthorizeEndpoint : AuthorizeEndpointBase
 }
 //------------------------------Ʌ
 
-//--------------------------------------V handle /connect/authorize/callback
+//--------------------------------------V handle /connect/authorize/callback and generate the authCode
 internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
 {
     public AuthorizeCallbackEndpoint(
@@ -736,6 +736,10 @@ internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
               SessionState = "0A1p6zn4hcizfpMeipQEEgmOavZyi6IKFOR1D_UY.90CD968BDBEBFFD7839BD0AEA5E74CE"
               State = "CfDJ8Fr2n1UxboNJlI8uHVA4skobbheKboVu0uc-Sw82YrXv0FSfGKT7h0rLyCJv18oA_-76qioJpUgqSBOy64XArrHcs_bRqkg1q7ZSkFLeT..."
            }
+        */
+
+        /*  result can also be Duende.IdentityServer.Endpoints.Results.ConsentPageResult for itp flow
+           
         */
 
         Logger.LogTrace("End Authorize Request. Result type: {0}", result?.GetType().ToString() ?? "-none-");
@@ -813,7 +817,7 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
         Logger.LogDebug("Creating Authorization Code Flow response.");
 
         var code = await CreateCodeAsync(request);  // <----------------------c2.5.  code contain user info
-        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);  // id might be the key for idp's internal database to local user when receiving
+        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);  // <---------c2.5 id might be the key for idp's internal database to local user when receiving
                                                                                   // https://localhost:7184/signin-oidc POST
         var response = new AuthorizeResponse
         {
@@ -912,12 +916,12 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
             stateHash = CryptoHelper.CreateHashClaimValue(request.State, algorithm);
         }
 
-        var code = new AuthorizationCode   // <----------------------c3.4.
+        var code = new AuthorizationCode   // <----------------------c3.4.! <-----------------that's how authCode generated
         {
             CreationTime = Clock.UtcNow.UtcDateTime,
             ClientId = request.Client.ClientId,
             Lifetime = request.Client.AuthorizationCodeLifetime,
-            Subject = request.Subject,
+            Subject = request.Subject,  // <-----------------------------user's ClaimsPrincipal is needed to create authCode
             SessionId = request.SessionId,
             Description = request.Description,
             CodeChallenge = request.CodeChallenge.Sha256(),
@@ -1847,7 +1851,7 @@ public class DefaultTokenService : ITokenService
         }
  
         claims.AddRange(await ClaimsProvider.GetIdentityTokenClaimsAsync(
-            request.Subject,
+            request.Subject,  // <-------------------------------------------!
             request.ValidatedResources,
             request.IncludeAllIdentityClaims,
             request.ValidatedRequest));
@@ -1869,7 +1873,7 @@ public class DefaultTokenService : ITokenService
         return token;
     }
 
-    public virtual async Task<Token> CreateAccessTokenAsync(TokenCreationRequest request)
+    public virtual async Task<Token> CreateAccessTokenAsync(TokenCreationRequest request)   // <-----------------------------------att
     {
         request.Validate();
  
@@ -2181,6 +2185,171 @@ public class DefaultClaimsService : IClaimsService
     }
 }
 //-------------------------------Ʌ
+
+//-------------------------------V
+public class DefaultGrantStore<T>
+{
+    protected string GrantType { get; }
+    protected ILogger Logger { get; }
+    protected IPersistedGrantStore Store { get; }
+    protected IPersistentGrantSerializer Serializer { get; }
+    protected IHandleGenerationService HandleGenerationService { get; }
+
+    protected DefaultGrantStore(string grantType,
+        IPersistedGrantStore store,
+        IPersistentGrantSerializer serializer,
+        IHandleGenerationService handleGenerationService,
+        ILogger logger)
+    {
+        if (grantType.IsMissing()) throw new ArgumentNullException(nameof(grantType));
+
+        GrantType = grantType;
+        Store = store;
+        Serializer = serializer;
+        HandleGenerationService = handleGenerationService;
+        Logger = logger;
+    }
+
+    private const string KeySeparator = ":";
+    protected const string HexEncodingFormatSuffix = "-1";
+
+    protected async Task<string> CreateHandleAsync()
+    {
+        return await HandleGenerationService.GenerateAsync() + HexEncodingFormatSuffix;
+    }
+
+    protected virtual string GetHashedKey(string value)
+    {
+        var key = (value + KeySeparator + GrantType);
+
+        if (value.EndsWith(HexEncodingFormatSuffix))
+        {
+            // newer format >= v6; uses hex encoding to avoid collation issues
+            using (var sha = SHA256.Create())
+            {
+                var bytes = Encoding.UTF8.GetBytes(key);
+                var hash = sha.ComputeHash(bytes);
+                return BitConverter.ToString(hash).Replace("-", "");
+            }
+        }
+
+        // old format <= v5
+        return key.Sha256();
+    }
+
+    protected virtual async Task<T> GetItemAsync(string key)
+    {
+        var hashedKey = GetHashedKey(key);
+        var item = await GetItemByHashedKeyAsync(hashedKey);
+        if (item == null)
+        {
+            Logger.LogDebug("{grantType} grant with value: {key} not found in store.", GrantType, key);
+        }
+        return item;
+    }
+
+    protected virtual async Task<T> GetItemByHashedKeyAsync(string hashedKey)
+    {
+        var grant = await Store.GetAsync(hashedKey);
+        if (grant != null && grant.Type == GrantType)
+        {
+            try
+            {
+                return Serializer.Deserialize<T>(grant.Data);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Failed to deserialize JSON from grant store.");
+            }
+        }
+
+        return default;
+    }
+
+    protected virtual async Task<IEnumerable<T>> GetAllAsync(PersistedGrantFilter filter)
+    {
+        filter.Type = GrantType;
+        var items = await Store.GetAllAsync(filter);
+        var result = items.Select(x => Serializer.Deserialize<T>(x.Data)).ToArray();
+        return result;
+    }
+
+    protected virtual async Task<string> CreateItemAsync(T item, string clientId, string subjectId, string sessionId, string description, DateTime created, int lifetime)
+    {
+        var handle = await CreateHandleAsync();
+        await StoreItemAsync(handle, item, clientId, subjectId, sessionId, description, created, created.AddSeconds(lifetime));
+        return handle;
+    }
+
+    protected virtual Task StoreItemAsync(string key, T item, string clientId, string subjectId, string sessionId, string description, DateTime created, DateTime? expiration, DateTime? consumedTime = null)
+    {
+        key = GetHashedKey(key);
+        return StoreItemByHashedKeyAsync(key, item, clientId, subjectId, sessionId, description, created, expiration, consumedTime);
+    }
+
+    protected virtual async Task StoreItemByHashedKeyAsync(string hashedKey, T item, string clientId, string subjectId, string sessionId, string description, DateTime created, DateTime? expiration, DateTime? consumedTime = null)
+    {
+        var json = Serializer.Serialize(item);
+
+        var grant = new PersistedGrant
+        {
+            Key = hashedKey,
+            Type = GrantType,
+            ClientId = clientId,
+            SubjectId = subjectId,
+            SessionId = sessionId,
+            Description = description,
+            CreationTime = created,
+            Expiration = expiration,
+            ConsumedTime = consumedTime,
+            Data = json
+        };
+
+        await Store.StoreAsync(grant);
+    }
+
+    protected virtual Task RemoveItemAsync(string key)
+    {
+        key = GetHashedKey(key);
+        return RemoveItemByHashedKeyAsync(key);
+    }
+        
+    protected virtual async Task RemoveItemByHashedKeyAsync(string key)
+    {
+        await Store.RemoveAsync(key);
+    }
+
+    protected virtual async Task RemoveAllAsync(string subjectId, string clientId, string sessionId = null)
+    {
+        await Store.RemoveAllAsync(new PersistedGrantFilter
+        {
+            SubjectId = subjectId,
+            ClientId = clientId,
+            SessionId = sessionId,
+            Type = GrantType
+        });
+    }
+}
+//-------------------------------Ʌ
+
+//----------------------------------------V
+public class DefaultAuthorizationCodeStore : DefaultGrantStore<AuthorizationCode>, IAuthorizationCodeStore
+{
+    public DefaultAuthorizationCodeStore(
+        IPersistedGrantStore store,
+        IPersistentGrantSerializer serializer,
+        IHandleGenerationService handleGenerationService,
+        ILogger<DefaultAuthorizationCodeStore> logger)
+        : base(IdentityServerConstants.PersistedGrantTypes.AuthorizationCode, store, serializer, handleGenerationService, logger) { }
+
+
+    public Task<string> StoreAuthorizationCodeAsync(AuthorizationCode code) => return CreateItemAsync(code, code.ClientId, code.Subject.GetSubjectId(), code.SessionId, code.Description, code.CreationTime, code.Lifetime);
+   
+    public Task<AuthorizationCode> GetAuthorizationCodeAsync(string code) => return GetItemAsync(code);
+   
+    public Task RemoveAuthorizationCodeAsync(string code) => return RemoveItemAsync(code);
+}
+//----------------------------------------Ʌ
 
 //-------------------------------------------------V  Extension methods for signin/out using the IdentityServer authentication scheme.
 public static class AuthenticationManagerExtensions
@@ -2622,7 +2791,7 @@ public class TokenResponseGenerator : ITokenResponseGenerator
 
     protected virtual async Task<TokenResponse> ProcessAuthorizationCodeRequestAsync(TokenRequestValidationResult request)
     {
-        var (accessToken, refreshToken) = await CreateAccessTokenAsync(request.ValidatedRequest);  // <--------------------this is how access token get generated
+        var (accessToken, refreshToken) = await CreateAccessTokenAsync(request.ValidatedRequest);  // <--------------------att this is how access token get generated
         var response = new TokenResponse
         {
             AccessToken = accessToken,
@@ -2662,8 +2831,8 @@ public class TokenResponseGenerator : ITokenResponseGenerator
                 ValidatedRequest = request.ValidatedRequest
             };
  
-            // this is how id token get generated
-            var idToken = await TokenService.CreateIdentityTokenAsync(tokenRequest);
+            // 
+            var idToken = await TokenService.CreateIdentityTokenAsync(tokenRequest);  // <--------------------idt, this is how id token get generated
             var jwt = await TokenService.CreateSecurityTokenAsync(idToken);
             //
 
@@ -2788,9 +2957,9 @@ public class TokenResponseGenerator : ITokenResponseGenerator
  
         return response;
     }
-
-    protected virtual async Task<(string accessToken, string refreshToken)> CreateAccessTokenAsync(ValidatedTokenRequest request)
-    {
+    
+    protected virtual async Task<(string accessToken, string refreshToken)> CreateAccessTokenAsync(ValidatedTokenRequest request) // <------------att, request contains scopes that
+    {                                                                                                                             // user choose on the consent page
         TokenCreationRequest tokenRequest;
         bool createRefreshToken;
  
@@ -3057,42 +3226,105 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
  
     public abstract Task<IEndpointResult> ProcessAsync(HttpContext context);
 
-    internal async Task<IEndpointResult> ProcessAuthorizeRequestAsync(NameValueCollection parameters, ClaimsPrincipal user, ConsentResponse consent)  // <------------------c2.0
-    {          
+    internal async Task<IEndpointResult> ProcessAuthorizeRequestAsync(NameValueCollection parameters, ClaimsPrincipal user, bool checkConsentResponse = false)  // <------------------c2.0
+    {      
+        if (checkConsentResponse && _authorizationParametersMessageStore != null)
+        {
+            var messageStoreId = parameters[Constants.AuthorizationParamsStore.MessageStoreIdParameterName];
+            var entry = await _authorizationParametersMessageStore.ReadAsync(messageStoreId);
+            parameters = entry?.Data.FromFullDictionary() ?? new NameValueCollection();
+
+            await _authorizationParametersMessageStore.DeleteAsync(messageStoreId);
+        }
+
+        // validate request
         var result = await _validator.ValidateAsync(parameters, user);
+
         if (result.IsError)
         {
-            return await CreateErrorResultAsync("Request validation failed", result.ValidatedRequest, result.Error, result.ErrorDescription);
+            return await CreateErrorResultAsync(
+                "Request validation failed",
+                result.ValidatedRequest,
+                result.Error,
+                result.ErrorDescription);
         }
- 
-        var request = result.ValidatedRequest;
- 
-        // determine user interaction
-        var interactionResult = await _interactionGenerator.ProcessInteractionAsync(request, consent);
-        if (interactionResult.IsError)
+
+        string consentRequestId = null;
+
+        try
         {
-            return await CreateErrorResultAsync("Interaction generator error", request, interactionResult.Error, interactionResult.ErrorDescription, false);
+            Message<ConsentResponse> consent = null;
+
+            if (checkConsentResponse)
+            {
+                var consentRequest = new ConsentRequest(result.ValidatedRequest.Raw, user?.GetSubjectId());
+                consentRequestId = consentRequest.Id;
+                consent = await _consentResponseStore.ReadAsync(consentRequestId);
+
+                if (consent != null && consent.Data == null)
+                {
+                    return await CreateErrorResultAsync("consent message is missing data", result.ValidatedRequest);
+                }
+            }
+
+            var request = result.ValidatedRequest;
+            LogRequest(request);
+
+            // determine user interaction
+            var interactionResult = await _interactionGenerator.ProcessInteractionAsync(request, consent?.Data);
+            if (interactionResult.ResponseType == InteractionResponseType.Error)
+            {
+                return await CreateErrorResultAsync("Interaction generator error", request, interactionResult.Error, interactionResult.ErrorDescription, false);
+            }
+            
+            if (interactionResult.ResponseType == InteractionResponseType.UserInteraction)
+            {
+                if (interactionResult.IsLogin)
+                {
+                    return new LoginPageResult(request, _options);
+                }
+                if (interactionResult.IsConsent)
+                {
+                    return new ConsentPageResult(request, _options);
+                }
+                if (interactionResult.IsRedirect)
+                {
+                    return new CustomRedirectResult(request, interactionResult.RedirectUrl, _options);
+                }
+                if (interactionResult.IsCreateAccount)
+                {
+                    return new CreateAccountPageResult(request, _options);
+                }
+            }
+
+            AuthorizeResponse response = await _authorizeResponseGenerator.CreateResponseAsync(request);    // <----------------------------------c2.1, generate authCode
+            /*
+            {
+               AccessToken: null,
+               IdentityToken: null,
+               Code: "D5A19F5003457F4DAF1C0C1B67xxxx-1,
+               issuer: "https://localhost:5001",
+               RedirectUri: "https://localhost:7184/signin-oidc"
+               Scope: "openid profile roles imagegalleryapi.read imagegalleryapi.write country offline_access other.fullaccess"  <------show scopes that chosen by user in consent page only
+               SessionState: "Y8vD3_84cXdQZeLoo34sOmtBXhdkEwVwChmKIDYhytw.B53C8C34794A437D31C807FFA99D1EE2",
+               State: CfDJ8Av8t8aEYQtIoPkZenx5Btx4Lh9asU-Rd5orrrda067ACEwN1xx0L8QdXCEfg021DCoU9xc0CBQr-mcIIxBKXwdputU9sB8GfFvfM0LTkxYGByWJ-Wqbvxxx
+            }
+            */
+
+            await RaiseResponseEventAsync(response);
+
+            LogResponse(response);
+
+            return new AuthorizeResult(response);   // <----------------------------------c3.0
         }
-        if (interactionResult.IsLogin)
+        finally
         {
-            return new LoginPageResult(request);
+            if (consentRequestId != null)
+            {
+                await _consentResponseStore.DeleteAsync(consentRequestId);
+            }
         }
-        if (interactionResult.IsConsent)
-        {
-            return new ConsentPageResult(request);
-        }
-        if (interactionResult.IsRedirect)
-        {
-            return new CustomRedirectResult(request, interactionResult.RedirectUrl);
-        }
- 
-        var response = await _authorizeResponseGenerator.CreateResponseAsync(request);   // <----------------------------------c2.1
- 
-        await RaiseResponseEventAsync(response);
- 
- 
-        return new AuthorizeResult(response);  // <----------------------------------c3.0
-    }
+    }   
 
     protected async Task<IEndpointResult> CreateErrorResultAsync(
         string logMessage, 
@@ -3125,9 +3357,6 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
 //--------------------------------------V
 internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
 {
-    private readonly IConsentMessageStore _consentResponseStore;
-    private readonly IAuthorizationParametersMessageStore _authorizationParametersMessageStore;
- 
     public AuthorizeCallbackEndpoint(
         IEventService events,
         ILogger<AuthorizeCallbackEndpoint> logger,
@@ -3138,56 +3367,29 @@ internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
         IUserSession userSession,
         IConsentMessageStore consentResponseStore,
         IAuthorizationParametersMessageStore authorizationParametersMessageStore = null)
-        : base(events, logger, options, validator, interactionGenerator, authorizeResponseGenerator, userSession)
+        : base(events, logger, options, validator, interactionGenerator, authorizeResponseGenerator, userSession, consentResponseStore, authorizationParametersMessageStore)
     {
-        _consentResponseStore = consentResponseStore;
-        _authorizationParametersMessageStore = authorizationParametersMessageStore;
     }
 
     public override async Task<IEndpointResult> ProcessAsync(HttpContext context)
     {
+        
         if (!HttpMethods.IsGet(context.Request.Method))
         {
             Logger.LogWarning("Invalid HTTP method for authorize endpoint.");
             return new StatusCodeResult(HttpStatusCode.MethodNotAllowed);
         }
- 
+
         Logger.LogDebug("Start authorize callback request");
- 
+
         var parameters = context.Request.Query.AsNameValueCollection();
-        if (_authorizationParametersMessageStore != null)
-        {
-            var messageStoreId = parameters[Constants.AuthorizationParamsStore.MessageStoreIdParameterName];
-            var entry = await _authorizationParametersMessageStore.ReadAsync(messageStoreId);
-            parameters = entry?.Data.FromFullDictionary() ?? new NameValueCollection();
- 
-            await _authorizationParametersMessageStore.DeleteAsync(messageStoreId);
-        }
- 
-        var user = await UserSession.GetUserAsync();
-        var consentRequest = new ConsentRequest(parameters, user?.GetSubjectId());
-        var consent = await _consentResponseStore.ReadAsync(consentRequest.Id);
- 
-        if (consent != null && consent.Data == null)
-        {
-            return await CreateErrorResultAsync("consent message is missing data");
-        }
- 
-        try
-        {
-            var result = await ProcessAuthorizeRequestAsync(parameters, user, consent?.Data);
- 
-            Logger.LogTrace("End Authorize Request. Result type: {0}", result?.GetType().ToString() ?? "-none-");
- 
-            return result;
-        }
-        finally
-        {
-            if (consent != null)
-            {
-                await _consentResponseStore.DeleteAsync(consentRequest.Id);
-            }
-        }
+        var user = await UserSession.GetUserAsync();  // <------------------------usc
+
+        var result = await ProcessAuthorizeRequestAsync(parameters, user, true);  // <------------conscope
+
+        Logger.LogTrace("End Authorize Request. Result type: {0}", result?.GetType().ToString() ?? "-none-");
+
+        return result;
     }
 }
 //--------------------------------------Ʌ
@@ -3274,7 +3476,7 @@ internal class TokenEndpoint : IEndpointHandler
         // create response
         _logger.LogTrace("Calling into token request response generator: {type}", _responseGenerator.GetType().FullName);
 
-        var response = await _responseGenerator.ProcessAsync(requestResult);  // <-----------------------------------------------
+        var response = await _responseGenerator.ProcessAsync(requestResult);  // <------------! _responseGenerator is ITokenResponseGenerator which generates id token,  access token etc
 
         await _events.RaiseAsync(new TokenIssuedSuccessEvent(response, requestResult));
         Telemetry.Metrics.TokenIssued(clientResult.Client.ClientId, requestResult.ValidatedRequest.GrantType, null);
@@ -3529,8 +3731,8 @@ internal class TokenRequestValidator : ITokenRequestValidator
 
         _validatedRequest.AuthorizationCodeHandle = code;
 
-        // code is the auth code from ClientApp
-        var authZcode =  await _authorizationCodeStore.GetAuthorizationCodeAsync(code); // <---------------------------------ac! this is how idp return user info by assoicating auth code  
+        // code is the auth code from ClientApp and authZcode contains the scope that users choose on the consent page
+        var authZcode =  await _authorizationCodeStore.GetAuthorizationCodeAsync(code); // <-----------------------ac, conscope! this is how idp return user info by assoicating auth code  
                                                                                         // with user when user signin by ClientApp to idp in the first time
         // authZcode.Subject contains { IsAuthenticated = true, Name = Emma, Claims = 5 }
                                                                                       
@@ -3571,7 +3773,7 @@ internal class TokenRequestValidator : ITokenRequestValidator
         }
 
         _validatedRequest.AuthorizationCode = authZcode;
-        _validatedRequest.Subject = authZcode.Subject;
+        _validatedRequest.Subject = authZcode.Subject;   // <-------------------------------------------ac
 
         // validate redirect_uri
         var redirectUri = parameters.Get(OidcConstants.TokenRequest.RedirectUri);
@@ -4235,6 +4437,91 @@ public class PersistedGrantStore : Duende.IdentityServer.Stores.IPersistedGrantS
     // ...
 }
 //------------------------------Ʌ
+
+//---------------------------V
+public class ValidatedRequest
+{
+    public NameValueCollection Raw { get; set; } = default!;
+    public Client Client { get; set; } = default!;
+    public string IssuerName { get; set; } = default!;
+    public ParsedSecret? Secret { get; set; }
+    public int AccessTokenLifetime { get; set; }
+    public ICollection<Claim> ClientClaims { get; set; } = new HashSet<Claim>(new ClaimComparer());
+    public AccessTokenType AccessTokenType { get; set; }
+    public ClaimsPrincipal? Subject { get; set; }
+    public string? SessionId { get; set; }
+    public IdentityServerOptions Options { get; set; } = default!;
+    public ResourceValidationResult ValidatedResources { get; set; } = new ResourceValidationResult();
+    public string? Confirmation { get; set; }
+    public ProofType ProofType { get; set; }
+
+    public string ClientId { get; set; } = default!;
+
+    public void SetClient(Client client, ParsedSecret? secret = null, string confirmation = "")
+    {
+        Client = client ?? throw new ArgumentNullException(nameof(client));
+        Secret = secret;
+        Confirmation = confirmation;
+        ClientId = client.ClientId;
+
+        AccessTokenLifetime = client.AccessTokenLifetime;
+        AccessTokenType = client.AccessTokenType;
+        ClientClaims = client.Claims.Select(c => new Claim(c.Type, c.Value, c.ValueType)).ToList();
+    }
+}
+//---------------------------Ʌ
+
+//------------------------------------V
+public class ValidatedAuthorizeRequest : ValidatedRequest
+{
+    public string ResponseType { get; set; } = default!;
+    public string ResponseMode { get; set; } = default!;
+    public string GrantType { get; set; } = default!;
+    public string RedirectUri { get; set; } = default!;
+    public List<string> RequestedScopes { get; set; } = default!;
+    public IEnumerable<string>? RequestedResourceIndicators { get; set; }
+    public bool WasConsentShown { get; set; }
+    public string? Description { get; set; }
+    public string? State { get; set; }
+    public string? UiLocales { get; set; }
+    public bool IsOpenIdRequest { get; set; }
+    public bool IsApiResourceRequest { get; set; }
+    public string? Nonce { get; set; }
+    public List<string>? AuthenticationContextReferenceClasses { get; set; }
+    public string? DisplayMode { get; set; }
+    public IEnumerable<string> PromptModes { get; set; } = Enumerable.Empty<string>();
+    public IEnumerable<string> OriginalPromptModes { get; set; } = Enumerable.Empty<string>();
+    public IEnumerable<string> ProcessedPromptModes { get; set; } = Enumerable.Empty<string>();
+    public int? MaxAge { get; set; }
+    public string? LoginHint { get; set; }
+    public string? CodeChallenge { get; set; }
+    public string? CodeChallengeMethod { get; set; }
+    public IEnumerable<Claim> RequestObjectValues { get; set; } = new List<Claim>();
+    public string? RequestObject { get; set; }
+    public string? DPoPKeyThumbprint { get; set; }
+    public string? PushedAuthorizationReferenceValue { get; set; }
+    public AuthorizeRequestType AuthorizeRequestType { get; set; }
+   
+    public bool AccessTokenRequested => ResponseType == OidcConstants.ResponseTypes.IdTokenToken ||
+                                        ResponseType == OidcConstants.ResponseTypes.Code ||
+                                        ResponseType == OidcConstants.ResponseTypes.CodeIdToken ||
+                                        ResponseType == OidcConstants.ResponseTypes.CodeToken ||
+                                        ResponseType == OidcConstants.ResponseTypes.CodeIdTokenToken;
+
+    public ValidatedAuthorizeRequest()
+    {
+        RequestedScopes = new List<string>();
+        AuthenticationContextReferenceClasses = new List<string>();
+    }
+}
+
+public enum AuthorizeRequestType
+{
+    Authorize,
+    PushedAuthorization,
+    AuthorizeWithPushedParameters
+}
+//------------------------------------Ʌ
 
 //---------------------------V
 internal class TokenValidator : ITokenValidator
@@ -5559,10 +5846,8 @@ internal class DefaultIdentityServerInteractionService : IIdentityServerInteract
         return null;
     }
 
-    public async Task GrantConsentAsync(AuthorizationRequest request, ConsentResponse consent, string subject = null)
-    {
-        using var activity = Tracing.ServiceActivitySource.StartActivity("DefaultIdentityServerInteractionService.GrantConsent");
-        
+    public async Task GrantConsentAsync(AuthorizationRequest request, ConsentResponse consent, string subject = null) // <-------------conscope
+    {       
         if (subject == null)
         {
             var user = await _userSession.GetUserAsync();
@@ -5571,7 +5856,7 @@ internal class DefaultIdentityServerInteractionService : IIdentityServerInteract
 
         if (subject == null && consent.Granted)
         {
-            throw new ArgumentNullException(nameof(subject), "User is not currently authenticated, and no subject id passed");
+            throw new ArgumentNullException(nameof(subject), "User is not currently authenticated, and no subject id passed");  // <-------------conscope
         }
 
         var consentRequest = new ConsentRequest(request, subject);

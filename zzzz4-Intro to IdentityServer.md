@@ -198,7 +198,15 @@ https://localhost:5001/connect/authorize?client_id=imagegalleryclient&redirect_u
 ```
 
 4. `https://localhost:5001/connect/authorize` POST request goes to IdentityServer, `IdentityServerMiddleware`'s `AuthorizeEndpoint` handles it (q2 on IdentityServer Source Code)
-and `AuthorizeEndpoint` redirects users with `/Account/Login` Razor page content with `ReturnUrl` set to `/connect/authorize/callback...` which flows from the Razor Page's `OnGet` to `OnPost`, the redirection request is below:
+and `AuthorizeEndpoint` redirects users with `/Account/Login` Razor page content with `ReturnUrl` set to:
+
+```C#
+/*
+/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile%20roles%20imagegalleryapi.read%20imagegalleryapi.write%20country%20offline_access%20other.fullaccess&code_challenge=eeXkWXyaLwA_-IolfrKVOlTrukJOyXIQ96gsW4v_SS8&code_challenge_method=S256&response_mode=form_post&nonce=xxx&state=xxxw&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
+*/
+```
+
+which flows from the Razor Page's `OnGet` to `OnPost`, the redirection request is below:
 
 ```C#
 /*
@@ -216,7 +224,9 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), then a POST redirection request from user to client using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+5. (optional) consent page, users choose the scope they want to give consent to ClientApp, check conscope flag. The choose scopes will be used to generate the access token in the following step, which makes sense as access token only contains scopes that users give permission to.
+
+6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), note that **user's ClaimsPrincipal (from user-to-idp cookie) is needed to generate this auth code and the code will be saved on IDP's end (`DefaultAuthorizationCodeStore`)** for backchannel request for access token later (c2.5). then a POST redirection request from user to client using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -231,12 +241,13 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code generated previously (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then a `ClaimIdentity` is created from the id token.  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** (o5.0) before redirecting users to its original request e.g home/index
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code generated previously (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ), then it calls `ITokenResponseGenerator.ProcessAsync(...)` to generate token such as access token (att), id token etc (idt). It is important to notice that **`auhCode` contains user ClaimPrinciple which will be used by `TokenEndpoint` to generate id token**. The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then **a `ClaimIdentity` is created from the id token** (o4.0).  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** (o5.0) before redirecting users to its original request e.g home/index
 Note that cookie can be:
 
 **A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end), so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
 
 **B**: `OpenIdConnectOptions.GetClaimsFromUserInfoEndpoint` is set to `true`, then `OpenIdConnectHandler` will call `https://localhost:5001/connect/userinfo` (access token is required in the bear header with this request) to get userinfo from IDP. The scopes inside Access Token will be extracted such as "sub", "name", "given_name", "family_name" claims because of `IdentityResource`/`Resource`'s `ICollection<string>` of `UserClaims`. Then `IProfileService` will be used to generate those claims. (u1.6, check `TestUserProfileService` or `LocalUserProfileService` for example). Later `AuthenticationTicket` is created (o4.4), so now **user-to-client** cookie can contain user info claims such as "name", "role" etc. Note that the id token still won't contains 'UserClaims". It is not a good practice to let id token contains "user specific claims" from Userinfo endpoint.
+so quick summary of the `IProfileService` is to allow "UserStore" such as TestUserStore or LocalUserService to return more user data from UserInfo endpoint as we normally don't want the cookie to become too big and only includes essential claims in the cookie, and let user decide whether to call UserInfo
 
 Important thing to know, in the subsequent requst, only **user-to-client** cookie is needed for user to be authenticated, however if you develop logout functionality by only sign out this 
 user-to-client cooke, it will have issue shows below.
@@ -344,6 +355,12 @@ There is an intesting thing that if you turn off role scope in client (remove `o
 =========================================================================
 
 
+## The Purpose of Id Token
+
+https://connect2id.com/learn/openid-connect explains: **The id token may be passed to other application components or to backend services when knowledge of the user's identity is required, for example to log audit trails**
+
+
+
 ## Token Lifetime Management
 
 **Id tokens have very short default of `5 minutes` lifetime** as it is issued once to create `ClaimsIdentity`. So let's user-to-client cookie (that contains the `AuthenticateTicket` created based on id token in the first time) expires after 3 mins, then `OpenIdConnectHandler.ChallengeAsync()` is called, the id token can be used again to construct `ClaimsIdentity` without requiring users to signin again with idp. However, if the cookie expires after one hour, then user has to sign in with idp again
@@ -354,7 +371,7 @@ Note the **user-to-client cookie (that contains id token and access token) expir
 
 For `Client.AccessTokenLifetime = numberOfSeconds`, this have nothing to do with cookie, it is only used by idp's end to control the lifetime of the access token, so the Api's `JwtBearerHandler` need to honour this setting. 
 
-So in a nutshell, `IdentityTokenLifetime` makes the id token contains a { "exp" : xxxx } and xxx will be used to set user-to-client cookie's expire time on ClientApp's end when `OpenIdConnectOptions.UseTokenLifetime` is true. While `AccessTokenLifetime` makes identity token contains  a { "exp" : yyyy } where yyy is mainly for idp to recieve and handle requests from Api's  `JwtBearerHandler` based on if the access token has expired
+So in a nutshell, `IdentityTokenLifetime` makes the id token contains a { "exp" : xxxx } and xxx will be used to set user-to-client cookie's expire time on ClientApp's end when `OpenIdConnectOptions.UseTokenLifetime` is true. While `AccessTokenLifetime` makes access token contains  a { "exp" : yyyy } where yyy is mainly for idp to recieve and handle requests from Api's `JwtBearerHandler` then check if the access token has expired
 
 If you set `OpenIdConnectOptions.UseTokenLifetime` to `true` then refresh the page, it still remains signin (if you watch broswer closely, you will see the browser flash a request of `https://localhost:5001/connect/authorize`), why? because of the refresh token behiend the scene
 
@@ -377,7 +394,7 @@ public static class Config  // IDP
         }
 }
 
-// if you refresh the page, you still can access the Api resource until 5mins passes,if you want access token to expire quick e.g when in testing environment, then you do:
+// if you refresh the page on client, you still can access the Api resource until 5mins passes,if you want access token to expire quick e.g when in testing environment, then you do:
 
 public class Program  // Api
 {
@@ -1001,10 +1018,106 @@ public class ApiResource : Resource
 
 ## Integration with Third-Party Identity Provider
 
-let's integrate identity server with Facebook. This time, our IDP (Marvin.IDP) becomes "Client",  Facebook is the "IDP"
+let's integrate identity server with Facebook. This time, our idp (Marvin.IDP) becomes "Client",  Facebook is the "idp". Note that **Marvin.IDP doesn't create a new Facebook account associated local account into it's database**, check `UserSession.GetUserAsync()` in `AuthorizeCallbackEndpoint`, you will see it is the cookie that does the job by "simulating a local user". Also check `UserManager.AddLoginAsync` in `ExternalSignInModel.OnGetCorrelate`. Note that unlike OpenIdConnectHandler, there is no "id_token" in this process (itp3.2)
+
+The request pipeline is:
+
+1.  User click "Google" on `/Account/Login/Index.cshtml`, Marvin.IDP's Razor Page `/ExternalLogin/Challenge` handles it and generate a 401 Challenge response
+noth that `Challenge.cshtml` page receives `returnUrl` argument which is 
 
 ```C#
-//-------------------------------------------V idp
+/*
+/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile%20roles%20imagegalleryapi.read%20imagegalleryapi.write%20country%20offline_access%20other.fullaccess&code_challenge=iCe9Xfxxx&code_challenge_method=S256&response_mode=form_post&nonce=638607962987575171.xxx&state=CfDxxx--KuezNHw&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0]} 
+*/
+```
+
+this `returnUrl` will be "saved" into `AuthenticationProperties` who is futher part of Challenge response `return Challenge(props, "Google");`, then it will be included in the `state` of the url in step 3, check `itpr` flag for more details
+
+
+2. ASP.NET framework process this challenge response and eventually calls e.g `HandleChallengeAsync()` of `GoogleHandler` (actually it is `OAuthHandler.HandleChallengeAsync()`):
+
+```C#
+public partial class ChallengeResult : ActionResult
+{
+    // ...
+    public override async Task ExecuteResultAsync(ActionContext context)
+    {
+        // ...
+        var httpContext = context.HttpContext;
+ 
+        if (AuthenticationSchemes != null && AuthenticationSchemes.Count > 0)
+        {
+            foreach (var scheme in AuthenticationSchemes)
+            {
+                await httpContext.ChallengeAsync(scheme, Properties);
+            }
+        }
+        else
+        {
+            await httpContext.ChallengeAsync(Properties);
+        }
+    }
+}
+```
+
+3. `OAuthHandler.HandleChallengeAsync()` generates a redirection to user:
+
+```C#
+/*
+https://accounts.google.com/o/oauth2/v2/auth?client_id=735272809416-al0409se48v1cua7hnusrfl40btja967.apps.googleusercontent.com&scope=openid%20profile%20email&response_type=code&redirect_uri=https%3A%2F%2Flocalhost%3A5001%2Fsignin-google&code_challenge=pxDSisiWcuqE4FqzMCKKb6JSBOjJL-f0qWOk4eCY5AA&code_challenge_method=S256&state=xxx
+*/
+
+// note that redirect_uri is "https://localhost:5001/signin-google" which you need to pre-registered on google developer tool. 
+// state query string (encrypted) contains the first returnUrl " /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https" which will be used later
+```
+
+4. User receives the redirection request above and prompted with Google SignIn page and enter credentials, then Google Auth Server verify it and redirect users to pre-registered url `https://localhost:5001/signin-google`. `OAuthHandler.HandleRemoteAuthenticateAsync()` (call by `RemoteAuthenticationHandler.HandleRequestAsync()`, which is `IAuthenticationRequestHandler.HandleRequestAsync` check auth source code you will see) handles this request, authCode is sent to Google to receive access token. Note that unlike OpenID Connect flow, in OAuth2 **there won't be id token to be used** (itp3.2) as the id token won't be saved into user's cookie (Facebook doesn't even create id token, Google creates id token but again it won't be saved).
+
+Then `GoogleHandler.CreateTicketAsync()` is called (itp3.3) to create an `AuthenticationTicket`. Inside `CreateTicketAsync()`, it calls Google's `UserInformationEndpoint` (`https://www.googleapis.com/oauth2/v3/userinfo`) to create the `AuthenticationTicket`, access token, refresh_token etc will be saved in the user-to-marvinIdp cookie.
+
+5.  `RemoteAuthenticationHandler.HandleRequestAsync()` continues executing and calls `Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties)` (itp3.9) to generate the user-to-marvinIdp cookie mentioned above. Then it reidrects user to its Razor page `/externallogin/callback` (itp3.9)
+
+6. Inside `Callback.cshtml`, `HttpContext.AuthenticateAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme)` is called to read `AuthenticationTicket` from cookie, the result is:
+
+```C#
+/*
+{
+  nameidentifier: 103107428921156204586
+  name: slow jams
+  givenname: slow
+  surname: jams
+  emailaddress: lxdthriller@gmail.com
+}
+*/
+```
+but we only need the `nameidentifier: 103107428921156204586`, that's why `Callback.cshtml` calls ` await HttpContext.SignInAsync(new IdentityServerUser(nameidentifier), ...);`create a new `AuthenticationTicket` only contains:
+
+```C#
+/*
+{
+  nameidentifier: 103107428921156204586
+}
+*/
+```
+and removes the first AuthenticationTicket by calling ` await HttpContext.SignOutAsync("idsrv.external")`
+
+
+7. `Callback.cshtml` redirects users to this request below:
+
+```C#
+/*
+/connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile%20roles%20imagegalleryapi.read%20imagegalleryapi.write%20country%20offline_access%20other.fullaccess&code_challenge=5DUxxx&code_challenge_method=S256&response_mode=form_post&nonce=638xxx&state=xxxx-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0"
+*/
+```
+eventually, `OpenIdConnectHandler.HandleRemoteAuthenticateAsync()` handles the `signin-oidc` request (03.0)
+
+Note that no "local user" will be created on Marvin.IDP end (which is unlike the correlation phase in the pro asp.net identity book), future user to client communication is purely based on user-to-Marvin.IDP cookie which is created in step 6.
+
+An very important thing to keep in mind is, **there are two authCodes involved in this third party integration flow**, first auth code is generated for Marvin.IDP to Google AS communication , second authCode is generated for client to Marvin.IDP communication
+
+============================================================================================================
+```C#
+//-------------------------------------------V Marvin.IDP, third party registrations are registered on Marvin.IDP, so Marvin.IDP is "client" now
 builder.Services.AddIdentityServer(options =>   // <----------------------calls AddCookieAuthentication()
 {
     // ...
@@ -1034,7 +1147,7 @@ builder.Services.AddAuthentication().AddFacebook("Facebook", options =>
                     {
                         <a class="btn btn-secondary"
                             asp-page="/ExternalLogin/Challenge"    // <-------------------itp1.0
-                            asp-route-scheme="@provider.AuthenticationScheme"
+                            asp-route-scheme="@provider.AuthenticationScheme"  // <----------------"Google"
                             asp-route-returnUrl="@Model.Input.ReturnUrl">
                             @provider.DisplayName
                         </a>
@@ -1055,8 +1168,9 @@ public class Challenge : PageModel
     {
         _interactionService = interactionService;
     }
-        
-    public IActionResult OnGet(string scheme, string? returnUrl)   // returnUrl is /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https
+
+    // returnUrl is /connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https%3A%2F%2Flocalhost%3A7184%2Fsignin-oidc&response_type=code&scope=openid%20profile%20roles%20imagegalleryapi.read%20imagegalleryapi.write%20country%20offline_access%20other.fullaccess&code_challenge=iCe9Xfxxx&code_challenge_method=S256&response_mode=form_post&nonce=638607962987575171.xxx&state=CfDxxx--KuezNHw&x-client-SKU=ID_NET8_0&x-client-ver=7.1.2.0]} 
+    public IActionResult OnGet(string scheme, string? returnUrl)   // scheme is "Google"
     {
         if (string.IsNullOrEmpty(returnUrl)) returnUrl = "~/";
 
@@ -1078,14 +1192,14 @@ public class Challenge : PageModel
                 { "scheme", scheme },
             }
         };
-
+        
         return Challenge(props, scheme);   // <-------------------itp1.1. Behind the scene, ChallengeResult.ExecuteResultAsync() which internally calls httpContext.ChallengeAsync(...);
                                            // jump to FacebookHandler -> OAuthHandler.HandleChallengeAsync for reference
     }
 }
 //-------------------------------------Ʌ
 
-//------------------------------------V Pages/ExternalLogin/Callback.cshtml
+//-------------------------------V Pages/ExternalLogin/Callback.cshtml
 public class Callback : PageModel
 {
     //private readonly TestUserStore _users;
@@ -1108,15 +1222,16 @@ public class Callback : PageModel
         
     public async Task<IActionResult> OnGet()
     {
-        // read external identity from the temporary cookie
-        var result = await HttpContext.AuthenticateAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme);
+        // remember itp3.9 client-to-idp cookie is created, here client is "Marvin.IDP", idp is "facebook idp"
+        // result is from third party handler's CreateTicketAsync() which calls IDP's UserInformationEndpoint (itp3.3 flag)
+        var result = await HttpContext.AuthenticateAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme); // <----------itp4.1, use cookie handler to authenticate because
+                                                                                                                      // AddIdentityServer calls AddCookieAuthentication, check itpc flag 
         if (result.Succeeded != true)
         {
             throw new InvalidOperationException($"External authentication error: { result.Failure }");
         }
 
-        var externalUser = result.Principal ?? 
-            throw new InvalidOperationException("External authentication produced a null Principal");
+        var externalUser = result.Principal ?? throw new InvalidOperationException("External authentication produced a null Principal");
 		
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -1128,9 +1243,7 @@ public class Callback : PageModel
         // try to determine the unique id of the external user (issued by the provider)
         // the most common claim type for that are the sub claim and the NameIdentifier
         // depending on the external provider, some other claim type might be used
-        var userIdClaim = externalUser.FindFirst(JwtClaimTypes.Subject) ??
-                          externalUser.FindFirst(ClaimTypes.NameIdentifier) ??
-                          throw new InvalidOperationException("Unknown userid");
+        var userIdClaim = externalUser.FindFirst(JwtClaimTypes.Subject) ?? externalUser.FindFirst(ClaimTypes.NameIdentifier) ?? throw new InvalidOperationException("Unknown userid");
 
         var provider = result.Properties.Items["scheme"] ?? throw new InvalidOperationException("Null scheme in authentiation properties");
         var providerUserId = userIdClaim.Value;
@@ -1166,10 +1279,10 @@ public class Callback : PageModel
             AdditionalClaims = additionalLocalClaims
         };
 
-        await HttpContext.SignInAsync(isuser, localSignInProps);
+        await HttpContext.SignInAsync(isuser, localSignInProps);  // <----------------------------------!
 
         // delete temporary cookie used during external authentication
-        await HttpContext.SignOutAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme);
+        await HttpContext.SignOutAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme);   // <----------------------------------!
 
         // retrieve return URL
         var returnUrl = result.Properties.Items["returnUrl"] ?? "~/";
@@ -1231,9 +1344,17 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
 
 //---------------------------------V
 public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions>;
+
+public class GoogleHandler : OAuthHandler<GoogleOptions>;
 public class FacebookHandler : OAuthHandler<FacebookOptions>
 //---------------------------------Ʌ
 ```
+see "why we need OAuthHandler when OpenIdConnectHandler can do the job"  https://stackoverflow.com/questions/78934144/why-we-need-oauthhandler-when-openidconnecthandler-can-do-the-job/78934584#78934584
+
+
+
+dfdfdfdfdfddf- check how `/connect/authorize/callback?client_id=imagegalleryclient` is invoked back
+dfdfdfdfdfdf - why multiple auth scheme
 
 =========================================================================================================================
 

@@ -1133,7 +1133,8 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
         Exception? exception = null;
         AuthenticationProperties? properties = null;
 
-        try {
+        try 
+        {
             AuthenticateResult authResult = await HandleRemoteAuthenticateAsync();  // <--------------------------e2.2.
             /* authResult.Properties.Items contains:
                [.redirect, /Identity/Account/ExternalLogin?returnUrl=%2F&handler=Callback]
@@ -1209,7 +1210,7 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
         // SignInScheme is "Identity.External" which will be handled by CookieAuthenticationHandler which serilize the ticket into cookie for the next redirect request
         // normally CookieAuthenticationHandler is registered via idp registration calls like  `builder.Services.AddIdentityServer()` on IDP's end where AddIdentityServer
         // internally calls AddCookieAuthentication(), check Marvin.IDP.HostingExtensions for example
-        await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);  // <------------------e4
+        await Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties);  // <------------------e4, itp3.9 
         /* ticketContext.Properties.Properties.Items contains:       
             [LoginProvider, Google]
             [.AuthScheme, Google]
@@ -1227,6 +1228,7 @@ public abstract class RemoteAuthenticationHandler<TOptions> : AuthenticationHand
         }
  
         Response.Redirect(ticketContext.ReturnUri);  // <-----------------e5.0, ReturnUri is /Identity/Account/ExternalLogin?returnUrl=%2F&handler=Callback
+                                                     // <-----------------itp3.9. ReturnUri is /externallogin/callback, note it is Marvin.IDP that contains the cookie to third-party idp
         return true;
     }   
 
@@ -1359,7 +1361,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
 
     protected override Task<object> CreateEventsAsync() => Task.FromResult<object>(new OAuthEvents());
 
-    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()  // <------------------------e3.0, handles https://localhost:xxx/signin-google
+    protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()  // <------------------------e3.0, itp3.0 handles https://localhost:xxx/signin-google
     {
         var query = Request.Query;
  
@@ -1414,7 +1416,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
             return HandleRequestResult.Fail("Code was not found.", properties);
  
         var codeExchangeContext = new OAuthCodeExchangeContext(properties, code.ToString(), BuildRedirectUri(Options.CallbackPath));
-        using var tokens = await ExchangeCodeAsync(codeExchangeContext);  // <------------------------------e3.4, pass code (authCode) to get token
+        using var tokens = await ExchangeCodeAsync(codeExchangeContext);  // <------------------------------e3.4, itp3.1 pass code (authCode) to get tokens
  
         if (tokens.Error != null)
             return HandleRequestResult.Fail(tokens.Error, properties);
@@ -1424,7 +1426,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
  
         var identity = new ClaimsIdentity(ClaimsIssuer);  // <-----------------ClaimsIssuer is "Google" and is set at AuthenticationHandler
  
-        if (Options.SaveTokens)
+        if (Options.SaveTokens)  // <---------------------itp3.2 unlike OpenIdConnectHandler, there is no "id_token"
         {
             var authTokens = new List<AuthenticationToken>();
  
@@ -1452,10 +1454,11 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
             properties.StoreTokens(authTokens);
         }
  
-        AuthenticationTicket ticket = await CreateTicketAsync(identity, properties, tokens);  // <--------------------------e3.6 pass token to get user data
+        AuthenticationTicket ticket = await CreateTicketAsync(identity, properties, tokens);  // <--------------------------e3.6, itp3.3 pass token to get user data
+                                                                                              // note that CreateTicketAsync calls IDP's UserInformationEndpoint
         if (ticket != null)
         {
-            return HandleRequestResult.Success(ticket);
+            return HandleRequestResult.Success(ticket);  // ,--------------------------itp3.4
         }
         else
         {
@@ -1483,13 +1486,29 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
  
         var requestContent = new FormUrlEncodedContent(tokenRequestParameters!);
  
-        var requestMessage = new HttpRequestMessage(HttpMethod.Post, Options.TokenEndpoint);
+        var requestMessage = new HttpRequestMessage(HttpMethod.Post, Options.TokenEndpoint);  // TokenEndpoint is https://graph.facebook.com/v14.0/oauth/access_token
         requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         requestMessage.Content = requestContent;
         requestMessage.Version = Backchannel.DefaultRequestVersion;
         var response = await Backchannel.SendAsync(requestMessage, Context.RequestAborted);  // <------------------------------e3.5
         var body = await response.Content.ReadAsStringAsync(Context.RequestAborted);
- 
+        /*  facebook's body doesn't have id token
+          {
+            "access_token": "EAAQPZCGD6rsgBO6V8XbZAuM9Gkxxxx",
+            "token_type": "bearer",
+            "expires_in": 5183999
+          }
+        */
+        /*  google's body has id token, but OAuthHandler still don't save id token (itp3.2 flag)
+          {  
+            "access_token": "ya29.xxx",
+            "expires_in": 3599,
+            "scope": "https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid",
+            "token_type": "Bearer",
+            "id_token": "eyJhbGciOiJSUxxx"
+           }
+        */
+
         return response.IsSuccessStatusCode switch
         {
             true => OAuthTokenResponse.Success(JsonDocument.Parse(body)),
@@ -1519,7 +1538,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
         
     }
 
-    protected override async Task HandleChallengeAsync(AuthenticationProperties properties) // <-------------------------------------------e1, will be called
+    protected override async Task HandleChallengeAsync(AuthenticationProperties properties) // <-------------------------------------------e1, itp2.0, will be called
     {                                                                                       // after default SignIn page generate new ChallengeResult("Google", xxx);
        if (string.IsNullOrEmpty(properties.RedirectUri))
             properties.RedirectUri = OriginalPathBase + OriginalPath + Request.QueryString;
@@ -1528,8 +1547,16 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
         GenerateCorrelationId(properties);
  
         var authorizationEndpoint = BuildChallengeUrl(properties, BuildRedirectUri(Options.CallbackPath));
+        /*
+          https://accounts.google.com/o/oauth2/v2/auth?client_id=735272809416-al0409se48v1cua7hnusrfl40btja967.apps.googleusercontent.com&scope=openid%20profile%20email&response_type=code&redirect_uri=https%3A%2F%2Flocalhost%3A5001%2Fsignin-google&code_challenge=pxDSisiWcuqE4FqzMCKKb6JSBOjJL-f0qWOk4eCY5AA&code_challenge_method=S256&state=xxx
+        */
+
+        /*
+        "https://www.facebook.com/v14.0/dialog/oauth?client_id=1143476540059336&scope=email&response_type=code&redirect_uri=https%3A%2F%2Flocalhost%3A5001%2Fsignin-facebook&code_challenge=4jMvQp33M_Zw8dILzwEDLmZxodC6fPhHZ1pMPpsEyyY&code_challenge_method=S256&state=xxx
+        */
+
         var redirectContext = new RedirectContext<OAuthOptions>(Context, Scheme, Options, properties, authorizationEndpoint);
-        await Events.RedirectToAuthorizationEndpoint(redirectContext);  // <-----------------e1.1. go to Google's extern SignIn page where users enter credentials
+        await Events.RedirectToAuthorizationEndpoint(redirectContext);  // <-----------------e1.1, itp2.1. go to Google's extern SignIn page where users enter credentials
                                                                         // redirect to "https://accounts.google.com/o/oauth2/v2/auth/...."
         var location = Context.Response.Headers.Location;
         if (location == StringValues.Empty)
@@ -1540,7 +1567,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
             cookie = "(not set)";
     }
 
-    protected virtual string BuildChallengeUrl(AuthenticationProperties properties, string redirectUri)  // <---------e1.1, generate Goole's SignIn URL
+    protected virtual string BuildChallengeUrl(AuthenticationProperties properties, string redirectUri)  // <---------e1.1, itp2.1 generate Goole's SignIn URL
     {
         var scopeParameter = properties.GetParameter<ICollection<string>>(OAuthChallengeProperties.ScopeKey);
         var scope = scopeParameter != null ? FormatScope(scopeParameter) : FormatScope();
@@ -1550,7 +1577,7 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
             { "client_id", Options.ClientId },   // <------------------------
             { "scope", scope },
             { "response_type", "code" },
-            { "redirect_uri", redirectUri },
+            { "redirect_uri", redirectUri },  // <--------------redirectUri is /signin-google
         };
  
         if (Options.UsePkce)
@@ -1569,7 +1596,8 @@ public class OAuthHandler<TOptions> : RemoteAuthenticationHandler<TOptions> wher
             parameters[OAuthConstants.CodeChallengeMethodKey] = OAuthConstants.CodeChallengeMethodS256;
         }
  
-        parameters["state"] = Options.StateDataFormat.Protect(properties);
+        parameters["state"] = Options.StateDataFormat.Protect(properties);  // <---------------itpr, contains original return url from third party integration flow which is
+                                                                            // connect/authorize/callback?client_id=imagegalleryclient&redirect_uri=https
 
         // Options.AuthorizationEndpoint is "https://accounts.google.com/o/oauth2/v2/auth"
         return QueryHelpers.AddQueryString(Options.AuthorizationEndpoint, parameters!);  // <-------------------------------------
@@ -1590,7 +1618,7 @@ public class GoogleHandler : OAuthHandler<GoogleOptions>
 {
     public GoogleHandler(IOptionsMonitor<GoogleOptions> options, ILoggerFactory logger, UrlEncoder encoder) : base(options, logger, encoder) { }
 
-    protected override async Task<AuthenticationTicket> CreateTicketAsync(ClaimsIdentity identity, AuthenticationProperties properties, OAuthTokenResponse tokens)  // e3.6
+    protected override async Task<AuthenticationTicket> CreateTicketAsync(ClaimsIdentity identity, AuthenticationProperties properties, OAuthTokenResponse tokens)  // e3.6, itp3.3
     {
          // Get the Google user
         var request = new HttpRequestMessage(HttpMethod.Get, Options.UserInformationEndpoint);
@@ -1607,7 +1635,7 @@ public class GoogleHandler : OAuthHandler<GoogleOptions>
             var context = new OAuthCreatingTicketContext(new ClaimsPrincipal(identity), properties, Context, Scheme, Options, Backchannel, tokens, payload.RootElement);
             context.RunClaimActions();
             await Events.CreatingTicket(context);
-            return new AuthenticationTicket(context.Principal!, context.Properties, Scheme.Name);  // <---------------------e3.6.3.
+            return new AuthenticationTicket(context.Principal!, context.Properties, Scheme.Name);  // <---------------------e3.6.3., itp3.6
         }
     }
 

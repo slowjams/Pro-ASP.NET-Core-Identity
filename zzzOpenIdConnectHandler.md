@@ -696,7 +696,6 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
 
     protected override async Task<HandleRequestResult> HandleRemoteAuthenticateAsync()   // <----------------------------------------o3.0, handes https://localhost:7184/signin-oidc
     {
-        base.Logger.EnteringOpenIdAuthenticationHandlerHandleRemoteAuthenticateAsync(GetType().FullName);
         OpenIdConnectMessage authorizationResponse = null;
         if (HttpMethods.IsGet(base.Request.Method))
         {
@@ -1077,7 +1076,7 @@ public class OpenIdConnectHandler : RemoteAuthenticationHandler<OpenIdConnectOpt
         httpRequestMessage.Version = Backchannel.DefaultRequestVersion;
 
         HttpResponseMessage responseMessage = await Backchannel.SendAsync(httpRequestMessage, base.Context.RequestAborted);  // <------------------------o3.2.1.
-                                                                                                                             // exchange auth code for access code
+                                                                                                                             // exchange auth code for tokens
         string text = responseMessage.Content.Headers.ContentType?.MediaType;
         if (string.IsNullOrEmpty(text))
         {
