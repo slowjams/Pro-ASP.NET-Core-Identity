@@ -214,7 +214,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-5. User enter credentials, trigger `/Account/Login` post back to IdentityServer (i5), calls `HttpContext.SignInAsync("Cookie")` to **create user-to-idp cookie** (compared to Client calls SignInAsync in step 7, so there will be two cookies, one from user to client, and one from user to IdentityServer) so IdentityUser is transformed to ClaimsPrincipal which contains name claim such as "Emma", then AuthenticationTicket is added into cookie, then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
+5. User enter credentials, trigger `/Account/Login` post back to IdentityServer (i5), calls `HttpContext.SignInAsync("idsrv")` to **create user-to-idp cookie** (compared to Client calls SignInAsync in step 7, so there will be two cookies, one from user to client, and one from user to IdentityServer) so IdentityUser is transformed to ClaimsPrincipal which contains name claim such as "Emma", then AuthenticationTicket is added into cookie, then Razor Page (not `CookieAuthenticationHandler`) redirect users to `/connect/authorize/callback`
 
 ```C#
 /*
@@ -1075,7 +1075,7 @@ https://accounts.google.com/o/oauth2/v2/auth?client_id=735272809416-al0409se48v1
 
 Then `GoogleHandler.CreateTicketAsync()` is called (itp3.3) to create an `AuthenticationTicket`. Inside `CreateTicketAsync()`, it calls Google's `UserInformationEndpoint` (`https://www.googleapis.com/oauth2/v3/userinfo`) to create the `AuthenticationTicket`, access token, refresh_token etc will be saved in the user-to-marvinIdp cookie.
 
-5.  `RemoteAuthenticationHandler.HandleRequestAsync()` continues executing and calls `Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties)` (itp3.9) to generate the user-to-marvinIdp cookie mentioned above. Then it reidrects user to its Razor page `/externallogin/callback` (itp3.9)
+5.  `RemoteAuthenticationHandler.HandleRequestAsync()` continues executing and calls `Context.SignInAsync(SignInScheme, ticketContext.Principal!, ticketContext.Properties)` (itp3.9, SignInScheme is `idsrv.external`) to generate the user-to-marvinIdp cookie mentioned above. Then it reidrects user to its Razor page `/externallogin/callback` (itp3.9)
 
 6. Inside `Callback.cshtml`, `HttpContext.AuthenticateAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme)` is called to read `AuthenticationTicket` from cookie, the result is:
 
@@ -1099,7 +1099,7 @@ but we only need the `nameidentifier: 103107428921156204586`, that's why `Callba
 }
 */
 ```
-and removes the first AuthenticationTicket by calling ` await HttpContext.SignOutAsync("idsrv.external")`
+and removes the first AuthenticationTicket by calling `await HttpContext.SignOutAsync("idsrv.external")`
 
 
 7. `Callback.cshtml` redirects users to this request below:
@@ -1113,7 +1113,40 @@ eventually, `OpenIdConnectHandler.HandleRemoteAuthenticateAsync()` handles the `
 
 Note that no "local user" will be created on Marvin.IDP end (which is unlike the correlation phase in the pro asp.net identity book), future user to client communication is purely based on user-to-Marvin.IDP cookie which is created in step 6.
 
-An very important thing to keep in mind is, **there are two authCodes involved in this third party integration flow**, first auth code is generated for Marvin.IDP to Google AS communication , second authCode is generated for client to Marvin.IDP communication
+An very important thing to keep in mind is, **there are two authCodes involved in this third party integration flow**, first auth code is generated for Marvin.IDP to Google AS communication , second authCode is generated for client to Marvin.IDP communication.
+
+Now you should know why we use two different schemes: `IdentityServerConstants.DefaultCookieAuthenticationScheme` (`idsrv`) VS `IdentityServerConstants.ExternalCookieAuthenticationScheme` (`idsrv.external`), since our Marvin.IDP is also "client' to Google AS, so we need to differentiate cookie scheme. Let's say we don't use `idsrv.external`:
+
+```C#
+// Marvin.IDP
+builder.Services.AddAuthentication().AddGoogle("Google", googleOptions =>
+{
+    googleOptions.SignInScheme = IdentityServerConstants.DefaultCookieAuthenticationScheme;  // say we don't use IdentityServerConstants.ExternalCookieAuthenticationScheme; 
+});
+```
+and we know that we will be calling `await HttpContext.SignOutAsync(IdentityServerConstants.DefaultCookieAuthenticationScheme)` in `Callback.cshtml`, but `idsrv` is also used by `AddIdentityServer()` which calls `AddCookieAuthentication()` that uses default `idsrv` scheme (check idsrvexternal flag) as
+
+```C#
+// AddIdentityServer() calls
+public static IIdentityServerBuilder AddCookieAuthentication(this IIdentityServerBuilder builder)
+{
+    builder.Services
+        .AddAuthentication(IdentityServerConstants.DefaultCookieAuthenticationScheme)  // <--------------default scheme for user-to-client communication
+        .AddCookie(IdentityServerConstants.DefaultCookieAuthenticationScheme)
+        .AddCookie(IdentityServerConstants.ExternalCookieAuthenticationScheme); 
+    // ...
+}
+```
+
+ plus
+
+`await HttpContext.SignInAsync("idsrv", props)` in Marvin.IDP's Login page
+
+and
+
+we need this user-to-client cookie (usc flag) to generate authCode in user-client flow,
+
+Now this cookie is cleared by accident, the end result is the third party integration flow breaks user-to-client flow.
 
 ============================================================================================================
 ```C#

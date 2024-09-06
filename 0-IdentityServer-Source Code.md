@@ -203,19 +203,19 @@ public static class IdentityServerBuilderExtensionsCore
 {
     public static IIdentityServerBuilder AddRequiredPlatformServices(this IIdentityServerBuilder builder)
     {
-        builder.Services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();            
+        builder.Services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
         builder.Services.AddOptions();
-        builder.Services.AddSingleton(
-            resolver => resolver.GetRequiredService<IOptions<IdentityServerOptions>>().Value);
+        builder.Services.AddSingleton(resolver => resolver.GetRequiredService<IOptions<IdentityServerOptions>>().Value);
+        builder.Services.AddTransient(resolver => resolver.GetRequiredService<IOptions<IdentityServerOptions>>().Value.PersistentGrants);
         builder.Services.AddHttpClient();
- 
+
         return builder;
     }
 
     public static IIdentityServerBuilder AddCookieAuthentication(this IIdentityServerBuilder builder)
     {
         builder.Services
-            .AddAuthentication(IdentityServerConstants.DefaultCookieAuthenticationScheme)  // AddAuthentication is from Microsoft which indirectly call AddAuthenticationCore()
+            .AddAuthentication(IdentityServerConstants.DefaultCookieAuthenticationScheme)  // idsrvexternal
             .AddCookie(IdentityServerConstants.DefaultCookieAuthenticationScheme)
             .AddCookie(IdentityServerConstants.ExternalCookieAuthenticationScheme);  // <--------------------------------------itpc
  
@@ -2364,10 +2364,10 @@ public static class AuthenticationManagerExtensions
         await context.SignInAsync(await context.GetCookieAuthenticationSchemeAsync(), user.CreatePrincipal(), properties);
     }
 
-    internal static async Task<string> GetCookieAuthenticationSchemeAsync(this HttpContext context)
+    internal static async Task<string> GetCookieAuthenticationSchemeAsync(this HttpContext context)  // <-------------------idsrvexternal
     {
-        var options = context.RequestServices.GetRequiredService<IdentityServerOptions>();
-        if (options.Authentication.CookieAuthenticationScheme != null)
+        var options = context.RequestServices.GetRequiredService<IdentityServerOptions>();  // normally options.Authentication.CookieAuthenticationScheme is "idsrv" because of
+        if (options.Authentication.CookieAuthenticationScheme != null)                      // AddIdentityServer calls `AddCookieAuthentication` which uses "idsrv" as default scheme
         {
             return options.Authentication.CookieAuthenticationScheme;
         }
