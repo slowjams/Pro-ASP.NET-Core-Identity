@@ -720,9 +720,10 @@ internal class AuthorizeCallbackEndpoint : AuthorizeEndpointBase
         Logger.LogDebug("Start authorize callback request");
 
         var parameters = context.Request.Query.AsNameValueCollection();
-        var user = await UserSession.GetUserAsync();
-
-        var result = await ProcessAuthorizeRequestAsync(parameters, user, true);  // <--------------------------------c1.1.
+        var user = await UserSession.GetUserAsync();  // <-------------------ac0, calls HttpContext.GetCookieAuthenticationSchemeAsync() to use Cookie handler to get user
+                                                      // this user (ClaimsPrinciple) will be used to generate authCode (actualluy it is a "primary key"),
+                                                      //  so this user will be saved on IDP's end and the primary key as authCode will be returned to client
+        var result = await ProcessAuthorizeRequestAsync(parameters, user, true);  // <--------------------------------ac1
         /*  result is Duende.IdentityServer.Endpoints.Results.AuthorizeResult}, the content is          
            {
               AccessToken = null
@@ -778,13 +779,13 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
         Events = events;
     }
 
-    public virtual async Task<AuthorizeResponse> CreateResponseAsync(ValidatedAuthorizeRequest request)   // <----------------------c2.2
+    public virtual async Task<AuthorizeResponse> CreateResponseAsync(ValidatedAuthorizeRequest request)   // <----------------------ac2.2
     {
         using var activity = Tracing.BasicActivitySource.StartActivity("AuthorizeResponseGenerator.CreateResponse");
 
         if (request.GrantType == GrantType.AuthorizationCode)
         {
-            return await CreateCodeFlowResponseAsync(request);   // <----------------------c2.3
+            return await CreateCodeFlowResponseAsync(request);   // <----------------------ac2.3
         }
         if (request.GrantType == GrantType.Implicit)
         {
@@ -812,12 +813,12 @@ public class AuthorizeResponseGenerator : IAuthorizeResponseGenerator
         return response;
     }
 
-    protected virtual async Task<AuthorizeResponse> CreateCodeFlowResponseAsync(ValidatedAuthorizeRequest request)  // <----------------------c2.4
+    protected virtual async Task<AuthorizeResponse> CreateCodeFlowResponseAsync(ValidatedAuthorizeRequest request)  // <----------------------ac2.4
     {
         Logger.LogDebug("Creating Authorization Code Flow response.");
 
-        var code = await CreateCodeAsync(request);  // <----------------------c2.5.  code contain user info
-        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);  // <---------c2.5 id might be the key for idp's internal database to local user when receiving
+        var code = await CreateCodeAsync(request);  // <----------------------ac2.5.  code contain user info
+        var id = await AuthorizationCodeStore.StoreAuthorizationCodeAsync(code);  // <---------ac2.5. id might be the key for idp's internal database to local user when receiving
                                                                                   // https://localhost:7184/signin-oidc POST
         var response = new AuthorizeResponse
         {
@@ -1029,8 +1030,6 @@ internal class EndSessionEndpoint : IEndpointHandler
 
     public async Task<IEndpointResult> ProcessAsync(HttpContext context)  // <---------------------------e0
     {
-        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.EndSession + "Endpoint");
-
         try
         {
             return await ProcessEndSessionAsync(context);
@@ -1044,8 +1043,6 @@ internal class EndSessionEndpoint : IEndpointHandler
 
     async Task<IEndpointResult> ProcessEndSessionAsync(HttpContext context)  // <---------------------------e1
     {
-        using var activity = Tracing.BasicActivitySource.StartActivity(IdentityServerConstants.EndpointNames.EndSession + "Endpoint");
-
         NameValueCollection parameters;
         if (HttpMethods.IsGet(context.Request.Method))
         {
@@ -3226,7 +3223,7 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
  
     public abstract Task<IEndpointResult> ProcessAsync(HttpContext context);
 
-    internal async Task<IEndpointResult> ProcessAuthorizeRequestAsync(NameValueCollection parameters, ClaimsPrincipal user, bool checkConsentResponse = false)  // <------------------c2.0
+    internal async Task<IEndpointResult> ProcessAuthorizeRequestAsync(NameValueCollection parameters, ClaimsPrincipal user, bool checkConsentResponse = false)  // <----------------ac2.0
     {      
         if (checkConsentResponse && _authorizationParametersMessageStore != null)
         {
@@ -3297,7 +3294,7 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
                 }
             }
 
-            AuthorizeResponse response = await _authorizeResponseGenerator.CreateResponseAsync(request);    // <----------------------------------c2.1, generate authCode
+            AuthorizeResponse response = await _authorizeResponseGenerator.CreateResponseAsync(request);    // <----------------------------------ac2.1, generate authCode
             /*
             {
                AccessToken: null,
@@ -3315,7 +3312,7 @@ internal abstract class AuthorizeEndpointBase : IEndpointHandler
 
             LogResponse(response);
 
-            return new AuthorizeResult(response);   // <----------------------------------c3.0
+            return new AuthorizeResult(response);   // <----------------------------------ac3.
         }
         finally
         {
@@ -3431,7 +3428,17 @@ internal class TokenEndpoint : IEndpointHandler
         return await ProcessTokenRequestAsync(context);
     }
 
-    private async Task<IEndpointResult> ProcessTokenRequestAsync(HttpContext context)
+    /* POST request from OpenIDConnectHandler.RedeemAuthorizationCodeAsync):
+
+      {[client_id, imagegalleryclient]}
+      {[client_secret, secret]}
+      {[code, D25B015FE0ADAE97B433F354D0A49A8F208A32511F10B9DDEB57B29CEF2B74D4-1]}
+      {[grant_type, authorization_code]}
+      {[redirect_uri, https://localhost:7184/signin-oidc]}  // <------------not sure why it is needed as we already in the /signin-oidc request
+      {[code_verifier, NK-Vskzz20wgh3vtmyIrx1aavewHUaT_EH8EFYk_llM]}
+        
+    */
+    private async Task<IEndpointResult> ProcessTokenRequestAsync(HttpContext context)  // <----------------------------toks0
     {
         _logger.LogDebug("Start token request.");
 
@@ -3460,9 +3467,9 @@ internal class TokenEndpoint : IEndpointHandler
             return error;
         }
 
-        var requestResult = await _requestValidator.ValidateRequestAsync(requestContext);  // <-----------------------ac retrieve user info based on auth code
-        //  requestResult.ValidatedRequest.Subject contains { IsAuthenticated = true, Name = Emma, Claims = 5 }
-
+        TokenRequestValidationResult requestResult = 
+            await _requestValidator.ValidateRequestAsync(requestContext);  // <-----toks1 retrieve user info based on auth code inside requestContext requestResult.ValidatedRequest.Subject 
+                                                                           //  (ClaimsPrincipal) contains { IsAuthenticated = true, Name = Emma, Claims = 5 } which is used below
         if (requestResult.IsError)
         {
             await _events.RaiseAsync(new TokenIssuedFailureEvent(requestResult));
@@ -3476,8 +3483,8 @@ internal class TokenEndpoint : IEndpointHandler
         // create response
         _logger.LogTrace("Calling into token request response generator: {type}", _responseGenerator.GetType().FullName);
 
-        var response = await _responseGenerator.ProcessAsync(requestResult);  // <------------! _responseGenerator is ITokenResponseGenerator which generates id token,  access token etc
-
+        var response = await _responseGenerator.ProcessAsync(requestResult);  // <----------toks2! _responseGenerator is ITokenResponseGenerator which generates id token,  access token etc
+                                                                              // based on the ClaimsPrincipal in requestResult generated at toks1 
         await _events.RaiseAsync(new TokenIssuedSuccessEvent(response, requestResult));
         Telemetry.Metrics.TokenIssued(clientResult.Client.ClientId, requestResult.ValidatedRequest.GrantType, null);
         LogTokens(response, requestResult);
@@ -3559,7 +3566,7 @@ internal class TokenRequestValidator : ITokenRequestValidator
         // ...
     }
 
-    public async Task<TokenRequestValidationResult> ValidateRequestAsync(TokenRequestValidationContext context)
+    public async Task<TokenRequestValidationResult> ValidateRequestAsync(TokenRequestValidationContext context)  // <-------------------------------toks1.1
     {   
         var parameters = context.RequestParameters;
         var clientValidationResult = context.ClientValidationResult;
@@ -3590,7 +3597,7 @@ internal class TokenRequestValidator : ITokenRequestValidator
         switch (grantType)
         {
             case OidcConstants.GrantTypes.AuthorizationCode:
-                return await RunValidationAsync(ValidateAuthorizationCodeRequestAsync, parameters);
+                return await RunValidationAsync(ValidateAuthorizationCodeRequestAsync, parameters);  // <-------------------------------toks1.2
             case OidcConstants.GrantTypes.ClientCredentials:
                 return await RunValidationAsync(ValidateClientCredentialsRequestAsync, parameters);
             case OidcConstants.GrantTypes.Password:
@@ -3706,7 +3713,7 @@ internal class TokenRequestValidator : ITokenRequestValidator
         return customValidationContext.Result;
     }
 
-    private async Task<TokenRequestValidationResult> ValidateAuthorizationCodeRequestAsync(NameValueCollection parameters)
+    private async Task<TokenRequestValidationResult> ValidateAuthorizationCodeRequestAsync(NameValueCollection parameters)  // <--------------------------toks1.3
     {
         _logger.LogDebug("Start validation of authorization code token request");
 
@@ -3732,7 +3739,7 @@ internal class TokenRequestValidator : ITokenRequestValidator
         _validatedRequest.AuthorizationCodeHandle = code;
 
         // code is the auth code from ClientApp and authZcode contains the scope that users choose on the consent page
-        var authZcode =  await _authorizationCodeStore.GetAuthorizationCodeAsync(code); // <-----------------------ac, conscope! this is how idp return user info by assoicating auth code  
+        var authZcode =  await _authorizationCodeStore.GetAuthorizationCodeAsync(code); // <--------------toks1.4, conscope! this is how idp return user info by assoicating auth code  
                                                                                         // with user when user signin by ClientApp to idp in the first time
         // authZcode.Subject contains { IsAuthenticated = true, Name = Emma, Claims = 5 }
                                                                                       
@@ -3751,7 +3758,7 @@ internal class TokenRequestValidator : ITokenRequestValidator
         // ...
 
         // remove code from store
-        await _authorizationCodeStore.RemoveAuthorizationCodeAsync(code);  // <-------------------------------------------ac
+        await _authorizationCodeStore.RemoveAuthorizationCodeAsync(code);  // <-------------------------------------------toks1.5
 
         if (authZcode.CreationTime.HasExceeded(authZcode.Lifetime, _clock.UtcNow.UtcDateTime))
         {
@@ -3773,7 +3780,7 @@ internal class TokenRequestValidator : ITokenRequestValidator
         }
 
         _validatedRequest.AuthorizationCode = authZcode;
-        _validatedRequest.Subject = authZcode.Subject;   // <-------------------------------------------ac
+        _validatedRequest.Subject = authZcode.Subject;   // <-------------------------------------------toks1.6.
 
         // validate redirect_uri
         var redirectUri = parameters.Get(OidcConstants.TokenRequest.RedirectUri);

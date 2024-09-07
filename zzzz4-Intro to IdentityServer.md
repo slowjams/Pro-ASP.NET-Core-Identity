@@ -226,7 +226,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 
 5. (optional) consent page, users choose the scope they want to give consent to ClientApp, check conscope flag. The choose scopes will be used to generate the access token in the following step, which makes sense as access token only contains scopes that users give permission to.
 
-6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check c flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), note that **user's ClaimsPrincipal (from user-to-idp cookie) is needed to generate this auth code and the code will be saved on IDP's end (`DefaultAuthorizationCodeStore`)** for backchannel request for access token later (c2.5). then a POST redirection request from user to client using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check ac flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), note that **user's ClaimsPrincipal (from user-to-idp cookie) is needed to generate this auth code and the code will be saved on IDP's end (`DefaultAuthorizationCodeStore`)** for backchannel request for access token later (c2.5). then a POST redirection request from user to client using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -241,7 +241,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 */
 ```
 
-7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code generated previously (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ), then it calls `ITokenResponseGenerator.ProcessAsync(...)` to generate token such as access token (att), id token etc (idt). It is important to notice that **`auhCode` contains user ClaimPrinciple which will be used by `TokenEndpoint` to generate id token**. The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then **a `ClaimIdentity` is created from the id token** (o4.0).  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** (o5.0) before redirecting users to its original request e.g home/index
+7.  `https://localhost:7184/signin-oidc` is handled by `AuthenticationMiddleware` (e1) in ClientApp, then `OpenIdConnectHandler.HandleRequestAsync()` then its base handler `RemoteAuthenticationHandler.HandleRequestAsync()` (OpenIdConnectHandler, o flag, this is where `https://localhost:5001/connect/token` endpoint get called with auth code generated previously (o3.2) to get access token and id token). Note that idp's `TokenEndpoint` retrieve "who is the user that this ClientApp represents for" info based on the auth code clientApp pass (check ac flag,  note that idp has assoicate with users and auth code in the beginning when user is redirected to sign in idp in the first time ), then it calls `ITokenResponseGenerator.ProcessAsync(...)` to generate tokens (toks flag) such as access token (att), id token etc (idt). It is important to notice that **`auhCode` contains user ClaimPrinciple which will be used by `TokenEndpoint` to generate id token** (idt). The id token is validated in ClientApp, part of this validation is calculating the hash from the access token to see if it mathches the `at_hash` value in the id token, so access token takes part in the validation procedure of the identity token. If validation checks out, then **a `ClaimIdentity` is created from the id token** (o4.0).  **Client calls `Context.SignInAsync()` with this id-token-based ClaimIdentity to create 'user-to-client' cookie** (o5.0) before redirecting users to its original request e.g home/index
 Note that cookie can be:
 
 **A**: `AuthenticationTicket` is created from id token, and since id token doesn't userinfo such "user = Emma" claim (note that **user-to-idp** cookie always contains "user = Emma" claim, since user signs in on IDP's end), so this **user-to-client** cookie won't have any user info claims such as "name", "role" etc
@@ -260,10 +260,10 @@ public class AuthenticationController : Controller
     [Authorize]
     public async Task Logout()
     {
-        // clears the local cookie
+        // clears user-to-client cookie
         await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
 
-        // clear IDP own session/cookie
+        // clear user-to-idp session/cookie
         await HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme); // <----------don't forget to call this one
     }
 }
@@ -302,10 +302,12 @@ https://localhost:5001/Account/Logout?logoutId=CfDJ8Fr2n1UxboNJlI8uHVA4skoft053f
 */
 ```
 
-9. check `e2` flag you will see inside `/Account/Logout` page, it calls `await HttpContext.SignOutAsync()` which clear out user-idp cookie, i.e clear user session
+check `e2` flag you will see inside `/Account/Logout` page, it calls `await HttpContext.SignOutAsync()` which clear out user-to-idp cookie, i.e clear user session
+
+so `EndSessionEndpoint` itself doesn't clear ser-idp cookie, it only does some validations, what makes it clear user-to-idp cookie is the redirection it generates which redirects user to the `/Account/Logout` page and in there user-to-idp cookie is cleared.
 
 
-10. Send requests to API with access token. It is important to note that Api's `HttpContext.User`'s `ClaimsPrincipal` is constructed by `JwtBearerHandler` based on the access token (check j0.4 flag).
+9. Send requests to API with access token. It is important to note that Api's `HttpContext.User`'s `ClaimsPrincipal` is constructed by `JwtBearerHandler` based on the access token (check j0.4 flag).
 
 
 Important to know the Claims difference between the ClientApi and Api
