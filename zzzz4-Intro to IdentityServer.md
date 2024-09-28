@@ -226,7 +226,7 @@ https://localhost:5001/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback
 
 5. (optional) consent page, users choose the scope they want to give consent to ClientApp, check conscope flag. The choose scopes will be used to generate the access token in the following step, which makes sense as access token only contains scopes that users give permission to.
 
-6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check ac flag) handles this `/connect/authorize/callback` request to generate an auth code (c3.4), note that **user's ClaimsPrincipal (from user-to-idp cookie) is needed to generate this auth code and the code will be saved on IDP's end (`DefaultAuthorizationCodeStore`)** for backchannel request for access token later (c2.5). then a POST redirection request from user to client using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
+6. IDP's `IdentityServerMiddleware` handles `/connect/authorize/callback` (HttpContext.User contains "user = Emma" claim because of user-to-idp cookie created), its `AuthorizeCallbackEndpoint` (check ac flag) handles this `/connect/authorize/callback` request (**the main purpose of `/connect/authorize/callback` is to generate an auth code and redirect user to send POST `/signin-oidc` to idp**, see c3.4 flag), note that **user's ClaimsPrincipal (from user-to-idp cookie) is needed to generate this auth code and the code will be saved on IDP's end (`DefaultAuthorizationCodeStore`)** for backchannel request for access token later (c2.5). then a POST redirection request from user to client using client's pre-registration RedirectUris (`https://localhost:7184/signin-oidc`) with auth code (in body, not in querystring as the redirection is POST redirection) is initialize
 
 ```C#
 /*  https://localhost:7184/signin-oidc POST
@@ -1020,7 +1020,7 @@ public class ApiResource : Resource
 
 ## Integration with Third-Party Identity Provider
 
-let's integrate identity server with Facebook. This time, our idp (Marvin.IDP) becomes "Client",  Facebook is the "idp". Note that **Marvin.IDP doesn't create a new Facebook account associated local account into it's database**, check `UserSession.GetUserAsync()` in `AuthorizeCallbackEndpoint`, you will see it is the cookie that does the job by "simulating a local user". Also check `UserManager.AddLoginAsync` in `ExternalSignInModel.OnGetCorrelate`. Note that unlike OpenIdConnectHandler, there is no "id_token" in this process (itp3.2)
+let's integrate identity server with Google. This time, our idp (Marvin.IDP) becomes "Client",  Facebook is the "idp". Note that **Marvin.IDP doesn't create a new Facebook account associated local account into it's database**, check `UserSession.GetUserAsync()` in `AuthorizeCallbackEndpoint`, you will see it is the cookie that does the job by "simulating a local user". Also check `UserManager.AddLoginAsync` in `ExternalSignInModel.OnGetCorrelate`. Note that unlike OpenIdConnectHandler, there is no "id_token" in this process (itp3.2)
 
 The request pipeline is:
 
@@ -1149,6 +1149,9 @@ and
 we need this user-to-client cookie (usc flag) to generate authCode in user-client flow,
 
 Now this cookie is cleared by accident, the end result is the third party integration flow breaks user-to-client flow.
+
+A speical note that we only clear the first user-to-idp Google-related cookie by calling `await HttpContext.SignOutAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme)`, we didn't call EndSession endpoint, in fact Google doesn't provide this endpoint, which make sense, third party like Google or Facebook want people to stay on their site as long as possible.
+So even you click the Logout button on Client's Logout Page, next time you are still prompted to Consent Page without needing to provide credentials (`OAuthHandler.HandleChallengeAsync()` still get called).
 
 ============================================================================================================
 ```C#
